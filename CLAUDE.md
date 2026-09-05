@@ -2,12 +2,11 @@
 
 Project-specific. Global rules in `~/.claude/rules/` still apply.
 
-## Branches & PRs
+## Branches & commits
 
-- `main` is protected. No direct pushes. Every change goes through a PR.
-- Branch name: `<type>/<slug>` (`feat/...`, `fix/...`, `docs/...`).
-- **Rebase-merge** PRs (never squash) so every commit lands individually on `main` and appears in the release notes. **Every commit** must be a valid Conventional Commit, not just the PR title.
-- All `ci.yml` jobs (rust, frontend, frontend-browser, installer) must pass before merge.
+- This repo is a **standalone fork** — no PRs or merges toward upstream, and no PRs inside the fork either. Work happens on a `<type>/<slug>` branch (`feat/...`, `fix/...`, `docs/...`), then lands on `main` directly: rebase the branch onto `main`, then `git merge --ff-only`, then push.
+- Every commit must be a valid Conventional Commit (release-please reads commits for the release notes).
+- Run the pre-commit checks below before pushing. GitHub Actions is not enabled on this fork, so there is no CI to wait for — the local runs are the gate.
 
 ## Commits drive releases
 

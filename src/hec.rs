@@ -13,8 +13,12 @@
 //!   outage is a hole in the index by design. GPU events are the exception —
 //!   they are the page-worthy data and are buffered (bounded), flushed on
 //!   recovery.
-//! - Idle hosts export nothing: the silent gap in the index is the record of
-//!   idleness. GPU events are never idle-gated.
+//! - Idle hosts export no metrics: the silent gap in the index is the record
+//!   of idleness. The exception is the liveness probe, which doubles as a
+//!   connection heartbeat — in every state it POSTs a
+//!   `spark_dashboard.connectivity.test` marker every probe interval, so a
+//!   healthy endpoint always has recent connectivity data.
+//! - GPU events are never idle-gated.
 //! - 403 (bad token) and 400 code 7 (index not allowed) count as *reachable* —
 //!   the network is up; the configuration problem is surfaced through the
 //!   status instead of masquerading as an outage.
@@ -30,7 +34,8 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 
 /// Per-POST deadline. A slow or wedged HEC must not stall the exporter loop.
 pub const POST_TIMEOUT: Duration = Duration::from_secs(5);
-/// Liveness probe cadence while `Down`. Fixed by ADR 0001 (no backoff).
+/// Liveness probe / connection heartbeat cadence. Runs in every exporter
+/// state, not just `Down`. Fixed by ADR 0001 (no backoff).
 pub const PROBE_INTERVAL: Duration = Duration::from_secs(60);
 /// "Recent" window for the idle gate, in milliseconds. Fixed by ADR 0001.
 const IDLE_WINDOW_MS: u64 = 60_000;
@@ -597,8 +602,9 @@ fn misconfigured_reason(status: u16, body: &str) -> String {
     "hec-other".to_string()
 }
 
-/// Sends an array of events to the HEC endpoint. An empty array is a valid
-/// zero-ingest payload and is what the liveness probe sends.
+/// Sends an array of events to the HEC endpoint. Any HTTP response — even a
+/// rejection — proves the endpoint is alive, which is what the liveness
+/// probe relies on.
 pub async fn post_events(
     client: &reqwest::Client,
     target: &HecTarget,
@@ -725,46 +731,14 @@ pub async fn run_exporter(
     let mut exporter = Exporter::new(probe_interval);
 
     loop {
-        // While Down, the liveness probe competes with the tick stream: a
-        // steady stream of ticks must not starve it, and a silent host must
-        // still get probed. While not Down, ticks are awaited normally.
-        let tick = if exporter.state == ExportState::Down {
-            let wait = tokio::time::sleep_until(exporter.next_probe.into());
-            tokio::pin!(wait);
-            tokio::select! {
-                biased;
-                res = rx.recv() => match res {
-                    Ok(json) => Tick::Json(json),
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::debug!(
-                            skipped,
-                            "HEC exporter lagged behind the metrics broadcast"
-                        );
-                        Tick::Lagged
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        tracing::info!("metrics broadcast closed, shutting down HEC exporter");
-                        break;
-                    }
-                },
-                () = &mut wait => match rx.try_recv() {
-                    Ok(json) => Tick::Json(json),
-                    Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                        tracing::debug!(
-                            skipped,
-                            "HEC exporter lagged behind the metrics broadcast"
-                        );
-                        Tick::Lagged
-                    }
-                    Err(broadcast::error::TryRecvError::Empty) => Tick::ProbeDue,
-                    Err(broadcast::error::TryRecvError::Closed) => {
-                        tracing::info!("metrics broadcast closed, shutting down HEC exporter");
-                        break;
-                    }
-                },
-            }
-        } else {
-            match rx.recv().await {
+        // The liveness probe competes with the tick stream in every state:
+        // an idle host drops its ticks without POSTing, so a steady tick
+        // stream alone would starve the probe, and a silent host must still
+        // get probed.
+        let wait = tokio::time::sleep_until(exporter.next_probe.into());
+        tokio::pin!(wait);
+        let tick = tokio::select! {
+            res = rx.recv() => match res {
                 Ok(json) => Tick::Json(json),
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::debug!(skipped, "HEC exporter lagged behind the metrics broadcast");
@@ -774,7 +748,19 @@ pub async fn run_exporter(
                     tracing::info!("metrics broadcast closed, shutting down HEC exporter");
                     break;
                 }
-            }
+            },
+            () = &mut wait => match rx.try_recv() {
+                Ok(json) => Tick::Json(json),
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    tracing::debug!(skipped, "HEC exporter lagged behind the metrics broadcast");
+                    Tick::Lagged
+                }
+                Err(broadcast::error::TryRecvError::Empty) => Tick::ProbeDue,
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    tracing::info!("metrics broadcast closed, shutting down HEC exporter");
+                    break;
+                }
+            },
         };
 
         if let Tick::Json(json) = tick {
@@ -798,8 +784,11 @@ pub async fn run_exporter(
 
             if !is_active(&snapshot) {
                 // Idle: the snapshot is dropped before queueing; the gap in
-                // the index is the record of idleness.
-                exporter.state = ExportState::Idle;
+                // the index is the record of idleness. A host that is idle
+                // and Down stays Down — the outage is the more severe fact.
+                if exporter.state != ExportState::Down {
+                    exporter.state = ExportState::Idle;
+                }
                 exporter.dropped += 1;
                 publish(&status, &exporter).await;
                 continue;
@@ -850,14 +839,31 @@ pub async fn run_exporter(
         }
 
         if let Tick::ProbeDue = tick {
-            // Zero-ingest liveness probe: any HTTP response proves the
-            // endpoint is alive.
+            // Liveness probe doubled as a connection heartbeat: it POSTs a
+            // `spark_dashboard.connectivity.test` marker, so a healthy
+            // endpoint ingests one every probe interval no matter how idle
+            // the host is, and any HTTP response — even a rejection — proves
+            // the endpoint is alive.
             let target = config.read().await.clone().filter(|t| t.usable());
             if let Some(target) = target {
-                match post_events(&client, &target, &[]).await {
-                    SendOutcome::Unreachable => {} // still down
+                let heartbeat = build_test_event(&host, &target.index, now_ms());
+                match post_events(&client, &target, &[heartbeat]).await {
+                    SendOutcome::Unreachable => {
+                        // While Down this is the expected repeat failure;
+                        // from Exporting or Idle the probe is the first sign
+                        // of an outage — nothing to flush, just drop.
+                        if exporter.state != ExportState::Down {
+                            exporter.enter_down(probe_interval);
+                        }
+                    }
                     SendOutcome::Ok => {
-                        exporter.state = ExportState::Exporting;
+                        // A Down exporter recovers the data path; an Idle or
+                        // Exporting one keeps its state — the heartbeat
+                        // proves the connection, it does not claim to
+                        // export metrics.
+                        if exporter.state == ExportState::Down {
+                            exporter.state = ExportState::Exporting;
+                        }
                         exporter.reachable = true;
                         exporter.last_error = None;
                         exporter.last_ok_ms = Some(now_ms());
@@ -870,12 +876,16 @@ pub async fn run_exporter(
                     // rejected probe, so the status surface reported healthy
                     // while every real ingest kept failing the same way.
                     SendOutcome::Retry => {
-                        exporter.state = ExportState::Exporting;
+                        if exporter.state == ExportState::Down {
+                            exporter.state = ExportState::Exporting;
+                        }
                         exporter.reachable = true;
                         exporter.last_error = Some("hec-429-or-5xx".to_string());
                     }
                     SendOutcome::Misconfigured(reason) => {
-                        exporter.state = ExportState::Exporting;
+                        if exporter.state == ExportState::Down {
+                            exporter.state = ExportState::Exporting;
+                        }
                         exporter.reachable = true;
                         exporter.last_error = Some(reason);
                     }
@@ -1624,7 +1634,7 @@ mod tests {
             config,
             status.clone(),
             "test-host".into(),
-            Duration::from_millis(100),
+            Duration::from_secs(60), // keep the connection heartbeat out of this data-path test
         ));
 
         tx.send(active_json()).unwrap();
@@ -1666,7 +1676,10 @@ mod tests {
             config,
             status.clone(),
             "test-host".into(),
-            Duration::from_millis(100),
+            // 60 s probe interval: this test asserts about the idle gate
+            // only, and the connection heartbeat would otherwise add a
+            // heartbeat POST inside the wait window.
+            Duration::from_secs(60),
         ));
 
         tx.send(idle_json()).unwrap();
@@ -1697,7 +1710,7 @@ mod tests {
             config,
             status.clone(),
             "test-host".into(),
-            Duration::from_millis(100),
+            Duration::from_secs(60), // keep the connection heartbeat out of this data-path test
         ));
 
         tx.send(active_json()).unwrap();
@@ -1737,7 +1750,7 @@ mod tests {
             config,
             status.clone(),
             "test-host".into(),
-            Duration::from_millis(100),
+            Duration::from_secs(60), // keep the connection heartbeat out of this data-path test
         ));
 
         tx.send(active_json()).unwrap();
@@ -1878,6 +1891,58 @@ mod tests {
         assert!(
             st.last_ok_ms.is_none(),
             "a 403 is not a success and must not stamp last_ok_ms"
+        );
+        drop(task);
+    }
+
+    #[tokio::test]
+    async fn an_idle_host_still_heartbeats_the_connectivity_test_event() {
+        // The liveness probe doubles as a connection heartbeat: even when
+        // the idle gate drops every metric snapshot, a healthy endpoint
+        // must still ingest a `spark_dashboard.connectivity.test` marker
+        // every probe interval, or the dashboard's connectivity panel sees
+        // nothing but stale data.
+        let mock = start_mock(None, 0).await;
+        let mut target = target();
+        target.url = mock.url.clone();
+        let (tx, rx) = broadcast::channel::<String>(16);
+        let config = SharedHecConfig::new(RwLock::new(Some(target)));
+        let status = SharedExportStatus::new(Mutex::new(ExportStatus::disabled()));
+        let task = tokio::spawn(run_exporter(
+            rx,
+            config,
+            status.clone(),
+            "test-host".into(),
+            Duration::from_millis(100),
+        ));
+
+        // Keep the host idle: every snapshot is dropped by the idle gate.
+        for _ in 0..5 {
+            tx.send(idle_json()).unwrap();
+        }
+
+        let st = wait_status(&status, Duration::from_secs(3), |s| s.last_ok_ms.is_some()).await;
+        assert!(st.last_ok_ms.is_some(), "the heartbeat must succeed");
+        assert!(
+            st.state == ExportState::Idle,
+            "a heartbeat proves the connection, it does not claim to export metrics"
+        );
+        assert!(st.reachable);
+
+        let posts = mock.posts.lock().unwrap().clone();
+        let heartbeat: Value = serde_json::from_str(
+            posts
+                .iter()
+                .find(|body| body.contains("spark_dashboard.connectivity.test"))
+                .expect("a heartbeat POST must have been recorded"),
+        )
+        .unwrap();
+        let event = heartbeat.as_array().unwrap()[0].clone();
+        assert_eq!(event["sourcetype"], "spark_dashboard");
+        assert_eq!(event["event"], "metric");
+        assert_eq!(
+            event["fields"]["metric_name:spark_dashboard.connectivity.test"],
+            1
         );
         drop(task);
     }

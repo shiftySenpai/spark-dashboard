@@ -84,6 +84,10 @@ When you change `MemoryMetrics`/`GpuMetrics`/`CpuMetrics` shape, serde names, di
 
 If one is genuinely N/A, say so in the commit.
 
+## Dashboard schema versioning
+
+`DASHBOARD_SCHEMA_VERSION` (`frontend/src/lib/dashboard/schema.ts`) is bumped for **every** document-shape change — additive ones included (policy adopted with upstream v0.14.0). A bump without a migration protects the new field from an older build's lossy save. In the same PR: the version bump, a migration step in `migrations.ts` (identity for additive changes), and a version test in `schema.test.ts`.
+
 ## Tests ship with the change
 
 No behavior change merges without test coverage in the same PR. Rust branches → `#[cfg(test)]`. Frontend components/formatters → Vitest. New API field → both sides.

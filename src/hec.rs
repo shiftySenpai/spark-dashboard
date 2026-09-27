@@ -1196,6 +1196,8 @@ mod tests {
             clock_sm_mhz: None,
             clock_memory_mhz: None,
             fan_speed_percent: None,
+            pcie_rx_bytes_per_sec: None,
+            pcie_tx_bytes_per_sec: None,
         }
     }
 

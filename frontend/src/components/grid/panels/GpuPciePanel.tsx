@@ -1,8 +1,10 @@
 import { useMetricSeries } from '@/hooks/useMetricsStore'
+import { formatRate } from '@/lib/format'
 import { gpuLabel } from './gpuLabel'
 import { GpuPanelNotice, PanelNotice } from './PanelNotice'
 import { IoPanel } from './IoPanel'
-import { useGpuPanel } from './useGpuPanel'
+import { MultiGpuPanelBody } from './MultiGpuPanelBody'
+import { useGpuPanel, useGpuColumns } from './useGpuPanel'
 import type { PanelContentProps } from '../panelRegistry'
 
 /**
@@ -31,6 +33,34 @@ export function GpuPciePanel({ panel }: PanelContentProps) {
     resolved ? resolution.seriesFor('gpuPcieTx') : 'gpuPcieTx',
     panel.window,
   )
+  const columns = useGpuColumns(panel, 'gpuPcieRx')
+  // Every GPU at once: one labelled row per GPU. Each row headlines both rates
+  // and trends the RX series — the full RX/TX/Total split lives on the single
+  // GPU body, and an operator who wants per-GPU TX trends pins the page to one
+  // GPU.
+  if (resolution.status === 'aggregate') {
+    return (
+      <MultiGpuPanelBody
+        seriesLabel="PCIe RX"
+        columns={(columns ?? []).map((c) => {
+          const rxRate = c.gpu.pcie_rx_bytes_per_sec
+          const txRate = c.gpu.pcie_tx_bytes_per_sec
+          return {
+            index: c.index,
+            name: c.name,
+            engines: c.engines,
+            value: rxRate === null ? null : rxRate,
+            unit: 'B/s',
+            displayValue:
+              rxRate === null || txRate === null
+                ? '—'
+                : `${formatRate(rxRate)} RX · ${formatRate(txRate)} TX`,
+            data: c.data,
+          }
+        })}
+      />
+    )
+  }
   if (resolution.status !== 'resolved') return <GpuPanelNotice resolution={resolution} />
 
   const { gpu } = resolution

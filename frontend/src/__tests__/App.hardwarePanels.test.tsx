@@ -555,7 +555,7 @@ describe('the GPU PCIe panel', () => {
     expect(within(pcie).queryByTestId('chart')).not.toBeInTheDocument()
   })
 
-  it('charts each GPU’s own traffic when two panels are pinned to different GPUs', async () => {
+  it('charts each GPU’s own traffic when the page splits across GPUs and a panel pins one', async () => {
     const fetchMock = serveConfiguration({
       document: storedDocument([
         pciePanel(),
@@ -578,13 +578,20 @@ describe('the GPU PCIe panel', () => {
       ]),
     )
 
-    // The following panel resolves to the primary GPU, the pinned one to
-    // GPU 1 — value and chart series alike, so the label and data agree.
+    // A multi-GPU page defaults to every GPU at once: the following panel
+    // divides across them, one labelled row per GPU, and each row trends its
+    // own RX series. The pinned panel still shows only its own link, so the
+    // label and the data agree.
     const following = region('GPU PCIe')
-    expect(within(following).getByText('1.0 MB/s')).toBeInTheDocument()
-    expect(within(following).getByText('2.0 MB/s')).toBeInTheDocument()
-    expect(within(following).getByTestId('chart-series-RX')).toHaveAttribute('data-values', `${MIB}`)
+    expect(
+      within(following)
+        .getAllByTestId('chart')
+        .map((c) => c.getAttribute('data-values')),
+    ).toEqual([`${MIB}`, `${3 * MIB}`])
+    expect(within(following).getByText('1.0 MB/s RX · 2.0 MB/s TX')).toBeInTheDocument()
+    expect(within(following).getByText('3.0 MB/s RX · 4.0 MB/s TX')).toBeInTheDocument()
     expect(within(following).getByText('GPU 0')).toBeInTheDocument()
+    expect(within(following).getByText('GPU 1')).toBeInTheDocument()
 
     const pinned = region('Second GPU PCIe')
     expect(within(pinned).getByText('3.0 MB/s')).toBeInTheDocument()

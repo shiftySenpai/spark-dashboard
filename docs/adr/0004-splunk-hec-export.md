@@ -1,4 +1,4 @@
-# ADR 0001: Splunk HEC metrics export
+# ADR 0004: Splunk HEC metrics export
 
 - **Status:** Accepted
 - **Date:** 2026-08-17

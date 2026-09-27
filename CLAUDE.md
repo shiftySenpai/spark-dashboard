@@ -4,9 +4,11 @@ Project-specific. Global rules in `~/.claude/rules/` still apply.
 
 ## Branches & commits
 
-- This repo is a **standalone fork** — no PRs or merges toward upstream, and no PRs inside the fork either. Work happens on a `<type>/<slug>` branch (`feat/...`, `fix/...`, `docs/...`), then lands on `main` directly: rebase the branch onto `main`, then `git merge --ff-only`, then push.
-- Every commit must be a valid Conventional Commit (release-please reads commits for the release notes).
-- Run the pre-commit checks below before pushing. GitHub Actions is not enabled on this fork, so there is no CI to wait for — the local runs are the gate.
+- Remotes: `origin` = **upstream** (niklasfrick/spark-dashboard), `fork` = shiftySenpai/spark-dashboard. Day-to-day work lands on the fork's `main` directly: `<type>/<slug>` branch (`feat/...`, `fix/...`, `docs/...`) → rebase onto `main` → `git merge --ff-only` → push to `fork`.
+- Finished features are contributed **upstream** as PRs. An upstream PR is a **fresh branch cut from latest `origin/main`** carrying only the feature's commits (cherry-picked, fork-only chores/docs skipped) — never the fork's `main`, whose history contains duplicated HEC commits, upstream-sync merges, and fork tooling. In flight (2026-09): **HEC export = upstream PR #97** (being rebuilt onto current upstream main; ADR renumbered 0001 → 0004 because upstream owns 0001–0003), then one **"engines and dashboard" PR** (llama.cpp + multi-GPU + engine status/rows) stacked on it — coordinate with upstream PR #122 (GPU PCIe panel; overlaps `src/metrics/gpu.rs`, `frontend/src/types/metrics.ts`, the panel registry).
+- Fork-only files never go upstream: `CLAUDE.md` edits, `docs/repo-graph.md`, `.gitignore` additions, spec files (`LlamaCppEngine-spec.md`, `SplunkHEC-spec.md`), `Splunk-App/`, `graphify-out/`.
+- Every commit must be a valid Conventional Commit (release-please reads commits in **both** repos — never hand-edit version fields, `.release-please-manifest.json`, or `CHANGELOG.md`).
+- Run the pre-commit checks below before pushing. GitHub Actions is not enabled on this fork; upstream runs its own CI on PRs.
 
 ## Commits drive releases
 

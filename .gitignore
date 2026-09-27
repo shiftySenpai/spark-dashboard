@@ -32,6 +32,7 @@ Splunk-App/
 
 # Local tooling
 deploy-local.sh
+update-spark.sh
 LlamaCppEngine-spec.md
 
 # Generated knowledge graph (local, not versioned)

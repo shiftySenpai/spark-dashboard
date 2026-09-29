@@ -71,6 +71,7 @@ export function GpuPciePanel({ panel }: PanelContentProps) {
   return (
     <IoPanel
       device={gpu.name}
+      engines={resolution.engines}
       label={gpuLabel(resolution, 'PCIe')}
       inbound={{
         tag: 'RX',

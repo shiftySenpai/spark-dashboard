@@ -36,6 +36,7 @@ export function GpuUtilizationPanel({ panel }: PanelContentProps) {
   return (
     <HardwarePanelBody
       device={resolution.gpu.name}
+      engines={resolution.engines}
       compact={<HBar value={value} label={label} unit="%" />}
       gauge={(sizePx) => <ArcGauge value={value} label={label} unit="%" size={sizePx} />}
       chart={

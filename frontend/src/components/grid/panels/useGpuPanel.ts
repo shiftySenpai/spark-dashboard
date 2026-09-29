@@ -4,10 +4,9 @@ import { usePageSelection } from '@/hooks/usePageSelection'
 import { resolveGpuBinding } from '@/lib/dashboard/bindings'
 import { pageSelection } from '@/lib/dashboard/selection'
 import { gpuIndexOf, snapshotGpus } from '@/lib/identity'
-import { engineDisplayName } from '@/lib/format'
 import { gpuSeries, type DataPoint, type GpuSeriesMetric } from '@/lib/metricsHistoryStore'
 import type { DashboardPanel } from '@/lib/dashboard/schema'
-import type { GpuMetrics } from '@/types/metrics'
+import type { EngineType, GpuMetrics } from '@/types/metrics'
 
 export type GpuPanelResolution =
   /** No snapshot has arrived yet; there are no GPUs to resolve against. */
@@ -16,6 +15,11 @@ export type GpuPanelResolution =
       status: 'resolved'
       gpu: GpuMetrics
       multiGpu: boolean
+      /** The inference engine(s) observed running on this GPU — multi-GPU
+       *  hosts only, the same rule as the `GPU N` label: on a single-GPU
+       *  host there is nowhere for an engine to be *else*, so the badge is
+       *  information the panel's label already carries. */
+      engines: EngineType[]
       /** The history series key for this GPU's metric — per-GPU keys on
        *  multi-GPU hosts, the legacy un-prefixed keys on single-GPU ones. */
       seriesFor: (metric: GpuSeriesMetric) => string
@@ -58,10 +62,23 @@ export function useGpuPanel(panel: DashboardPanel): GpuPanelResolution {
 
     const multiGpu = gpus.length > 1
     const index = gpuIndexOf(resolution.target)
+    // The frame's title row wears the same badge the all-GPUs rows do — the
+    // observed engines on this GPU, multi-GPU hosts only (see `multiGpu`'s
+    // doc above).
+    const engines = multiGpu
+      ? [
+          ...new Set(
+            (snapshot.engines ?? [])
+              .filter((engine) => engine.gpu_indexes?.includes(index))
+              .map((engine) => engine.engine_type),
+          ),
+        ]
+      : []
     return {
       status: 'resolved',
       gpu: resolution.target,
       multiGpu,
+      engines,
       seriesFor: (metric: GpuSeriesMetric) => gpuSeries(metric, index, multiGpu),
     }
   }, [snapshot, chosen, panel.binding])
@@ -89,8 +106,8 @@ export function useGpuPanelSeries(
 export interface GpuColumn {
   index: number
   name: string | null
-  /** The inference engine(s) observed running on this GPU, by display name. */
-  engines: string[]
+  /** The inference engine(s) observed running on this GPU. */
+  engines: EngineType[]
   gpu: GpuMetrics
   data: DataPoint[]
 }
@@ -117,13 +134,13 @@ export function useGpuColumns(
       // engine snapshot's `gpu_indexes` is stamped from NVML's per-device
       // compute-process PIDs, so this is observed, not guessed — an empty
       // list just means "no engine was seen here".
-      const engineNames = engines
+      const engineTypes = engines
         .filter((engine) => engine.gpu_indexes?.includes(index))
-        .map((engine) => engineDisplayName(engine.engine_type))
+        .map((engine) => engine.engine_type)
       return {
         index,
         name: gpu.name ?? null,
-        engines: [...new Set(engineNames)],
+        engines: [...new Set(engineTypes)],
         gpu,
         data: store.getChartData(gpuSeries(metric, index, true), panel.window),
       }

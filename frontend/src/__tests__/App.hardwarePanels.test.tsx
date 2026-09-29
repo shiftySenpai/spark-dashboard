@@ -8,7 +8,12 @@ import {
 } from '../test/configurationServer'
 import { MockWebSocket, substituteWebSocket } from '../test/websocket'
 import { DASHBOARD_SCHEMA_VERSION } from '../lib/dashboard/schema'
-import type { GpuEventData, GpuMetrics, MetricsSnapshot } from '../types/metrics'
+import type {
+  EngineSnapshot,
+  GpuEventData,
+  GpuMetrics,
+  MetricsSnapshot,
+} from '../types/metrics'
 
 // The hardware panels through the application seam (#80): real routing, real
 // configuration loading, real registry, store and subscriptions, with the
@@ -83,10 +88,24 @@ function makeGpu(index: number, overrides: Partial<GpuMetrics> = {}): GpuMetrics
   }
 }
 
+function makeEngine(overrides: Partial<EngineSnapshot> = {}): EngineSnapshot {
+  return {
+    engine_type: 'Vllm',
+    endpoint: 'http://127.0.0.1:8000',
+    status: { type: 'Running' },
+    model: null,
+    metrics: null,
+    recent_requests: [],
+    deployment_mode: 'Native',
+    ...overrides,
+  }
+}
+
 function makeSnapshot(
   ts: number,
   gpus?: GpuMetrics[],
   gpuEvents: GpuEventData[] = [],
+  engines: EngineSnapshot[] = [],
 ): MetricsSnapshot {
   return {
     timestamp_ms: ts,
@@ -113,7 +132,7 @@ function makeSnapshot(
     },
     disk: { name: 'nvme0n1', read_bytes_per_sec: 12 * MIB, write_bytes_per_sec: 3.5 * MIB },
     network: { name: 'enp1s0', rx_bytes_per_sec: 900 * KIB, tx_bytes_per_sec: 2 * MIB },
-    engines: [],
+    engines,
     gpu_events: gpuEvents,
   }
 }
@@ -276,6 +295,98 @@ describe('the hardware panels on a grid page', () => {
     // With several GPUs, each panel names the one it shows.
     expect(within(following).getByText('GPU 0')).toBeInTheDocument()
     expect(within(pinned).getByText('GPU 1')).toBeInTheDocument()
+  })
+
+  it('marks the GPU each engine runs on in the all-GPUs view, with the engine’s own logo', async () => {
+    const fetchMock = serveConfiguration({
+      document: storedDocument([
+        { id: 'util', type: 'gpu-utilization', geometry: { x: 0, y: 0, w: 12, h: 6 } },
+      ]),
+    })
+
+    render(<App />)
+    await configurationSettles(fetchMock)
+    receive(
+      makeSnapshot(
+        1000,
+        [makeGpu(0), makeGpu(1)],
+        [],
+        [
+          makeEngine({ endpoint: 'http://127.0.0.1:8000', gpu_indexes: [0] }),
+          makeEngine({
+            engine_type: 'LlamaCpp',
+            endpoint: 'http://127.0.0.1:8080',
+            gpu_indexes: [1],
+          }),
+        ],
+      ),
+    )
+
+    // Each GPU’s row wears the mark the engine reports use — the same chip, so
+    // the two views never disagree about what is running where.
+    const following = region('GPU Utilization')
+    const gpu0 = within(following).getByText('GPU 0').parentElement!
+    expect(gpu0).toContainElement(within(following).getByText('vLLM'))
+    expect(gpu0.querySelector('img')).toHaveAttribute('src', '/icons/vllm.svg')
+
+    const gpu1 = within(following).getByText('GPU 1').parentElement!
+    expect(gpu1).toContainElement(within(following).getByText('llama.cpp'))
+    expect(gpu1.querySelector('img')).toHaveAttribute('src', '/icons/llama-cpp.svg')
+  })
+
+  it('wears the engine’s mark on the title row of a pinned panel, like its all-GPUs rows', async () => {
+    const fetchMock = serveConfiguration({
+      document: storedDocument([
+        { id: 'following', type: 'gpu-utilization', geometry: { x: 0, y: 0, w: 6, h: 4 } },
+        {
+          id: 'pinned',
+          type: 'gpu-utilization',
+          title: 'Second GPU',
+          binding: { kind: 'gpu', index: 1 },
+          geometry: { x: 6, y: 0, w: 6, h: 4 },
+        },
+      ]),
+    })
+
+    render(<App />)
+    await configurationSettles(fetchMock)
+    receive(
+      makeSnapshot(
+        1000,
+        [makeGpu(0), makeGpu(1, { name: 'NVIDIA Beta 1' })],
+        [],
+        [makeEngine({ gpu_indexes: [1] })],
+      ),
+    )
+
+    // The all-GPUs rows wear the mark beside the GPU’s index (covered above);
+    // the pinned panel’s frame wears it beside the device on the title row —
+    // so the two views of “what is running where” agree.
+    const pinned = region('Second GPU')
+    const chip = within(pinned).getByText('vLLM')
+    expect(chip.parentElement!.querySelector('img')).toHaveAttribute('src', '/icons/vllm.svg')
+    // On the title row, beside the device — not in the body, where it would
+    // cost the panel height.
+    expect(within(pinned).getByRole('heading', { name: 'Second GPU' }).parentElement).toContainElement(
+      chip,
+    )
+  })
+
+  it('never badges a single-GPU host’s panel — the label already says what is where', async () => {
+    const fetchMock = serveConfiguration({
+      document: storedDocument([
+        { id: 'util', type: 'gpu-utilization', geometry: { x: 0, y: 0, w: 6, h: 4 } },
+      ]),
+    })
+
+    render(<App />)
+    await configurationSettles(fetchMock)
+    // The engine is observed on the only GPU — but with one GPU there is no
+    // “elsewhere” for it to be on, so the mark would say nothing the panel’s
+    // label does not already say.
+    receive(makeSnapshot(1000, undefined, [], [makeEngine({ gpu_indexes: [0] })]))
+
+    expect(within(region('GPU Utilization')).queryByText('vLLM')).not.toBeInTheDocument()
   })
 
   it('keeps the slot of a panel pinned to a GPU the host does not have, naming it', async () => {

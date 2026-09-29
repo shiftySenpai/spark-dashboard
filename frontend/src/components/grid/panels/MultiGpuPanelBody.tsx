@@ -1,12 +1,14 @@
 import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart'
-import { shortGpuName } from '@/lib/format'
+import { engineDisplayName, engineIconSrc, shortGpuName } from '@/lib/format'
+import { EngineChip } from './engineIdentity'
 import type { DataPoint } from '@/lib/metricsHistoryStore'
+import type { EngineType } from '@/types/metrics'
 
 export interface MultiGpuColumn {
   index: number
   name: string | null
-  /** The inference engine(s) observed running on this GPU, by display name. */
-  engines: string[]
+  /** The inference engine(s) observed running on this GPU. */
+  engines: EngineType[]
   /** The headline value, or null when this GPU reports none for the metric. */
   value: number | null
   /** The big number to show (defaults to `value` + `unit`). */
@@ -44,8 +46,17 @@ export function MultiGpuPanelBody({
                   GPU {c.index}
                 </span>
                 {c.engines.length > 0 && (
-                  <span className="truncate text-[11px] text-amber-300/80" title={c.engines.join(', ')}>
-                    {c.engines.join(', ')}
+                  <span
+                    className="flex min-w-0 items-center gap-1"
+                    title={c.engines.map((type) => engineDisplayName(type)).join(', ')}
+                  >
+                    {c.engines.map((type) => (
+                      <EngineChip
+                        key={type}
+                        label={engineDisplayName(type)}
+                        iconSrc={engineIconSrc(type)}
+                      />
+                    ))}
                   </span>
                 )}
                 {c.name && (

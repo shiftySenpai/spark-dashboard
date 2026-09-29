@@ -2,8 +2,11 @@ import { Settings2, X } from 'lucide-react'
 import { useState } from 'react'
 import { isKnownPanelType, panelSpec } from '@/lib/dashboard/panels'
 import { panelTitle, type DashboardPanel } from '@/lib/dashboard/schema'
-import { PanelDeviceContext } from './panelDevice'
+import { engineDisplayName, engineIconSrc } from '@/lib/format'
+import { EngineChip } from './panels/engineIdentity'
+import { PanelDeviceContext, PanelEnginesContext } from './panelDevice'
 import { renderPanelContent } from './panelRegistry'
+import type { EngineType } from '@/types/metrics'
 
 /**
  * One panel on the grid: the product's card chrome around whatever the type's
@@ -40,6 +43,7 @@ export function GridPanel({
   // Reported up by the content, which is the only thing that knows what its
   // binding resolved to — see `panelDevice`.
   const [device, setDevice] = useState<string | null>(null)
+  const [engines, setEngines] = useState<EngineType[]>([])
 
   return (
     <section
@@ -66,6 +70,20 @@ export function GridPanel({
             <span className="text-zinc-600">·</span> {device}
           </span>
         )}
+        {/* The engine(s) the panel's GPU is running — the same mark the engine
+            reports and the all-GPUs rows wear, so a frame says both what it
+            reads and what is running on it. */}
+        {engines.length > 0 && (
+          <span className="flex shrink-0 items-center gap-1">
+            {engines.map((type) => (
+              <EngineChip
+                key={type}
+                label={engineDisplayName(type)}
+                iconSrc={engineIconSrc(type)}
+              />
+            ))}
+          </span>
+        )}
         {editing && onConfigure && (
           <button
             type="button"
@@ -90,9 +108,11 @@ export function GridPanel({
         )}
       </div>
       <div className={`flex-1 min-h-0 min-w-0 ${editing ? 'pointer-events-none' : ''}`}>
-        <PanelDeviceContext.Provider value={setDevice}>
-          {renderPanelContent(panel) ?? <PanelPlaceholder type={panel.type} />}
-        </PanelDeviceContext.Provider>
+        <PanelEnginesContext.Provider value={setEngines}>
+          <PanelDeviceContext.Provider value={setDevice}>
+            {renderPanelContent(panel) ?? <PanelPlaceholder type={panel.type} />}
+          </PanelDeviceContext.Provider>
+        </PanelEnginesContext.Provider>
       </div>
     </section>
   )

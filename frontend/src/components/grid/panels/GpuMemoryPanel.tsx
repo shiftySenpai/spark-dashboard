@@ -75,6 +75,7 @@ export function GpuMemoryPanel({ panel }: PanelContentProps) {
   return (
     <HardwarePanelBody
       device={gpu.name}
+      engines={resolution.engines}
       compact={<HBar label={label} unit="%" segments={segments} />}
       gauge={(sizePx) => <ArcGauge label={label} unit="%" segments={segments} size={sizePx} />}
       chart={<TimeSeriesChart data={data} yDomain={[0, 100]} unit="%" seriesLabel="VRAM" />}

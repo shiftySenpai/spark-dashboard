@@ -47,6 +47,7 @@ export function GpuPowerPanel({ panel }: PanelContentProps) {
   return (
     <HardwarePanelBody
       device={resolution.gpu.name}
+      engines={resolution.engines}
       compact={
         <HBar
           value={percent}

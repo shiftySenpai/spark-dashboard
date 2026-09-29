@@ -37,6 +37,7 @@ export function GpuTemperaturePanel({ panel }: PanelContentProps) {
   return (
     <HardwarePanelBody
       device={resolution.gpu.name}
+      engines={resolution.engines}
       compact={<HBar value={value} label={label} unit="°C" thresholds={THRESHOLDS.gpuTemp} />}
       gauge={(sizePx) => (
         <ArcGauge value={value} label={label} unit="°C" thresholds={THRESHOLDS.gpuTemp} size={sizePx} />

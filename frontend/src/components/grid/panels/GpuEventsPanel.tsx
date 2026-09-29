@@ -2,7 +2,7 @@ import { useGpuEvents, useLatestSnapshot } from '@/hooks/useMetricsStore'
 import { formatAge } from '@/lib/format'
 import { gpuIndexOf } from '@/lib/identity'
 import { gpuEventColor } from '@/lib/theme'
-import { usePanelDevice } from '../panelDevice'
+import { usePanelDevice, usePanelEngines } from '../panelDevice'
 import { PanelList } from './PanelList'
 import { GpuPanelNotice, PanelNotice } from './PanelNotice'
 import { useGpuPanel } from './useGpuPanel'
@@ -31,6 +31,9 @@ export function GpuEventsPanel({ panel }: PanelContentProps) {
         ? 'All GPUs'
         : null,
   )
+  // The title-row badge is meaningful only for a specific GPU — the all-GPUs
+  // list already tags each event with its own.
+  usePanelEngines(resolution.status === 'resolved' ? resolution.engines : null)
 
   // The newest sample, not wall clock: the ages then hold still between
   // snapshots instead of ticking under a dashboard nobody is touching. Needed

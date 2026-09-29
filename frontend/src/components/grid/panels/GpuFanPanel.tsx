@@ -50,6 +50,7 @@ export function GpuFanPanel({ panel }: PanelContentProps) {
   return (
     <HardwarePanelBody
       device={gpu.name}
+      engines={resolution.engines}
       compact={<HBar value={percent} label={label} unit="%" />}
       gauge={(sizePx) => <ArcGauge value={percent} label={label} unit="%" size={sizePx} />}
       chart={<TimeSeriesChart data={data} yDomain={[0, 100]} unit="%" seriesLabel="Fan" />}

@@ -35,6 +35,7 @@ export function GpuClockPanel({ panel }: PanelContentProps) {
   return (
     <HardwarePanelBody
       device={resolution.gpu.name}
+      engines={resolution.engines}
       compact={
         <MetricRow label={label} value={mhz === null ? null : String(Math.round(mhz))} unit="MHz" />
       }

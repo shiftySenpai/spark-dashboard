@@ -1,12 +1,16 @@
 import type { ReactNode } from 'react'
 import { useElementSize } from '@/hooks/useElementSize'
-import { usePanelDevice } from '../panelDevice'
+import { usePanelDevice, usePanelEngines } from '../panelDevice'
 import { gaugeSizePx, hardwarePanelMode } from './mode'
+import type { EngineType } from '@/types/metrics'
 
 interface HardwarePanelBodyProps {
   /** The hardware this panel is reading: the GPU model, the CPU model, the
    *  disk or interface name. Shown by the frame, on the title row. */
   device?: string | null
+  /** The inference engine(s) running on this panel's GPU — the frame wears
+   *  their marks on the title row, beside the device. */
+  engines?: EngineType[]
   /** The value-only rendering for a box too short to chart in. */
   compact: ReactNode
   /** The gauge column, given its square size in px. Omitted for panels whose
@@ -33,6 +37,7 @@ interface HardwarePanelBodyProps {
  */
 export function HardwarePanelBody({
   device,
+  engines,
   compact,
   gauge,
   chart,
@@ -41,6 +46,7 @@ export function HardwarePanelBody({
   const [ref, size] = useElementSize<HTMLDivElement>()
   const mode = hardwarePanelMode(size)
   usePanelDevice(device)
+  usePanelEngines(engines)
 
   return (
     <div

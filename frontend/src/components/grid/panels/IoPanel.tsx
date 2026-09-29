@@ -5,6 +5,7 @@ import { sumSeries } from '@/lib/series'
 import type { DataPoint } from '@/lib/metricsHistoryStore'
 import { HardwarePanelBody } from './HardwarePanelBody'
 import { PanelNotice } from './PanelNotice'
+import type { EngineType } from '@/types/metrics'
 
 /** Chart color of the summed line on both I/O panels. */
 const TOTAL_COLOR = '#A1A1AA'
@@ -27,12 +28,16 @@ interface IoDirection {
  */
 export function IoPanel({
   device,
+  engines,
   label,
   inbound,
   outbound,
 }: {
   /** The disk, interface or GPU these rates were read from. */
   device?: string | null
+  /** The inference engine(s) running on this panel's GPU, for the frame's
+   *  title row. */
+  engines?: EngineType[]
   /** A heading over the rate pair, where a gauge would carry its label — the
    *  per-GPU panels use it to say which GPU's link this is. */
   label?: string
@@ -61,6 +66,7 @@ export function IoPanel({
   return (
     <HardwarePanelBody
       device={device}
+      engines={engines}
       compact={
         <div className="flex flex-col gap-0.5 min-w-0">
           {label && <Label>{label}</Label>}

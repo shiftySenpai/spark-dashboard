@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect } from 'react'
+import type { EngineType } from '@/types/metrics'
 
 /**
  * How a panel's content tells its frame which hardware it ended up reading.
@@ -31,4 +32,20 @@ export function usePanelDevice(device: string | null | undefined): void {
     report(device ?? null)
     return () => report(null)
   }, [report, device])
+}
+
+/** The sibling channel of `PanelDeviceContext`: the inference engine(s) the
+ *  panel resolved to, for the frame's title row — the mark beside the GPU's
+ *  name says what is running on it. Same rules: report above any early
+ *  return, cleared on unmount. */
+export const PanelEnginesContext = createContext<((engines: EngineType[]) => void) | null>(null)
+
+export function usePanelEngines(engines: EngineType[] | null | undefined): void {
+  const report = useContext(PanelEnginesContext)
+
+  useEffect(() => {
+    if (!report) return
+    report(engines ?? [])
+    return () => report([])
+  }, [report, engines])
 }

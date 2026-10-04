@@ -67,6 +67,9 @@ pub fn create_router(state: AppState) -> Router {
         // with control-plane messages (ADR 0001).
         .route("/export-status", get(get_export_status))
         .route("/export/test", post(test_export))
+        // Read once by the header badge. Plain text, like `/healthz` —
+        // the version is the whole response.
+        .route("/version", get(get_version))
         // One cap, enforced twice at the same threshold: the layer stops the
         // server buffering anything larger, and the handler rejects a body that
         // is exactly one byte over so the limit is ours rather than a tower
@@ -103,6 +106,12 @@ pub fn create_router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// The version of the running binary, straight from the crate so the CLI's
+/// `--version` and the header badge can never drift apart.
+async fn get_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 /// Returns the stored document, or `204 No Content` when nothing has been
@@ -405,6 +414,16 @@ mod tests {
             .expect("request to /healthz");
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         assert_eq!(resp.text().await.unwrap(), "ok");
+    }
+
+    #[tokio::test]
+    async fn version_endpoint_reports_the_package_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = spawn(dir.path()).await;
+
+        let resp = reqwest::get(format!("{base}/api/version")).await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]

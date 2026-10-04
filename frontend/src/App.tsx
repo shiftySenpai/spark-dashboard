@@ -8,6 +8,7 @@ import { LogStreamProvider } from './hooks/LogStreamProvider'
 import { MetricsStoreProvider } from './hooks/MetricsStoreProvider'
 import { AppHeader } from './components/AppHeader'
 import { ConfigurationNotices } from './components/ConfigurationNotices'
+import { VersionBadge } from './components/VersionBadge'
 import { ExportSettingsDialog } from './components/ExportSettingsDialog'
 import { EngineStatusStrip } from './components/EngineStatusStrip'
 import { HecStatusDot } from './components/HecStatusDot'
@@ -71,19 +72,24 @@ function DashboardPageView({ pageId }: { pageId: string | null }) {
     <div className="h-dvh flex flex-col bg-[#08080a] overflow-hidden">
       <AppHeader
         pages={
-          document && (
-            <PageBar
-              document={document}
-              // The bar highlights the page being viewed; at the root that is
-              // whichever one resolved, so the first tab reads as selected
-              // rather than none of them.
-              activePageId={page?.id ?? pageId ?? ''}
-              readOnly={readOnly}
-              editing={editing}
-              save={save}
-              reset={reset}
-            />
-          )
+          <>
+            {/* The running version sits beside the title — the first thing an
+                operator checks on a wall display before trusting the numbers. */}
+            <VersionBadge />
+            {document && (
+              <PageBar
+                document={document}
+                // The bar highlights the page being viewed; at the root that is
+                // whichever one resolved, so the first tab reads as selected
+                // rather than none of them.
+                activePageId={page?.id ?? pageId ?? ''}
+                readOnly={readOnly}
+                editing={editing}
+                save={save}
+                reset={reset}
+              />
+            )}
+          </>
         }
         trailing={
           <>

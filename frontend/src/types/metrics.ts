@@ -18,12 +18,22 @@ export interface GpuEventData {
   detail: string
 }
 
-/** Wire-format per-request inference metrics matching backend RecentRequest struct */
+/** Wire-format per-request inference metrics matching backend RecentRequest struct.
+ *  `recent_requests` on a snapshot carries the requests that finished since
+ *  the previous snapshot (a delta the history store accumulates).
+ *  `tokens_per_sec`/`ttft_ms` are null when the source cannot see token
+ *  counts (vLLM's uvicorn access lines); `source` is "engine" for
+ *  engine-reported rows (Strata) and "log" for log-parsed ones. */
 export interface InferenceRequestData {
   start_ms: number
   end_ms: number
-  tokens_per_sec: number
-  ttft_ms: number
+  tokens_per_sec: number | null
+  ttft_ms: number | null
+  prompt_tokens?: number | null
+  output_tokens?: number | null
+  finish?: string | null
+  prefix_cache_hit_rate?: number | null
+  source?: string
 }
 
 export interface GpuMetrics {

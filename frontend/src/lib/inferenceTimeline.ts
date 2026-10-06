@@ -78,8 +78,14 @@ export interface RequestSummary {
 export function requestSummary(requests: readonly InferenceRequestData[]): RequestSummary {
   return {
     count: requests.length,
-    medianTps: median(requests.map((r) => r.tokens_per_sec)),
-    medianTtftMs: median(requests.map((r) => r.ttft_ms)),
+    // Null-valued fields (sources without token counts) drop out of the
+    // median rather than counting as zero.
+    medianTps: median(
+      requests.map((r) => r.tokens_per_sec).filter((v): v is number => v !== null),
+    ),
+    medianTtftMs: median(
+      requests.map((r) => r.ttft_ms).filter((v): v is number => v !== null),
+    ),
   }
 }
 

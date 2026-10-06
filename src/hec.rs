@@ -1769,8 +1769,7 @@ mod tests {
                 recent_requests: vec![RecentRequest {
                     start_ms: 0,
                     end_ms: 1_723_799_900_000, // 100 s before the snapshot
-                    tokens_per_sec: 0.0,
-                    ttft_ms: 0.0,
+                    ..RecentRequest::default()
                 }],
                 ..engine_with(Some(0), Some(0))
             }];
@@ -1785,8 +1784,7 @@ mod tests {
                 recent_requests: vec![RecentRequest {
                     start_ms: 1_723_799_990_000, // 10 s before the snapshot
                     end_ms: 1_723_799_995_000,
-                    tokens_per_sec: 0.0,
-                    ttft_ms: 0.0,
+                    ..RecentRequest::default()
                 }],
                 ..engine_with(Some(0), Some(0))
             }];
@@ -1801,8 +1799,7 @@ mod tests {
                 recent_requests: vec![RecentRequest {
                     start_ms: 1_723_799_940_000, // exactly 60 s before
                     end_ms: 1_723_799_940_000,
-                    tokens_per_sec: 0.0,
-                    ttft_ms: 0.0,
+                    ..RecentRequest::default()
                 }],
                 ..engine_with(Some(0), Some(0))
             }];

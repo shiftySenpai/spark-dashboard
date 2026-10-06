@@ -24,6 +24,10 @@ pub struct DetectedEngine {
     /// the same container the dashboard is showing metrics for, rather than
     /// re-scanning and potentially picking a different one.
     pub container_id: Option<String>,
+    /// Log file the engine was told to write (`llama-server -f <path>`), when
+    /// the launch command line carries one. Feeds the per-request log tail for
+    /// natively-detected engines, which have no container logs to read.
+    pub log_file: Option<String>,
 }
 
 /// Known engine binaries and their default ports.
@@ -250,6 +254,7 @@ fn detect_by_process(sys: &sysinfo::System) -> Vec<DetectedEngine> {
                         served_model,
                         pids: vec![pid],
                         container_id: None,
+                        log_file: parse_log_file_from_args(&cmd),
                     });
                 }
             }
@@ -664,6 +669,7 @@ pub async fn detect_docker_engines() -> Vec<DetectedEngine> {
             served_model,
             pids,
             container_id: container.id.clone(),
+            log_file: None,
         });
     }
 
@@ -771,6 +777,33 @@ fn parse_model_from_args_llama(args: &[OsString]) -> Option<String> {
         }
         // Equals form: `-m=<path>`, `--model=<path>`, `-hf=<repo>`.
         for flag in ["-m=", "--model=", "-hf="] {
+            if let Some(val) = arg.strip_prefix(flag) {
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse the log-file path from a `llama-server` command line: `-f`/`--log-file
+/// <path>` (server.cpp's log flag — the model flag is `-m`, so `-f` is free
+/// for logs here). Other engines have no such flag; `None` means no native
+/// log source.
+fn parse_log_file_from_args(args: &[OsString]) -> Option<String> {
+    let args: Vec<String> = args
+        .iter()
+        .filter_map(|a| a.to_str().map(String::from))
+        .collect();
+    for (idx, arg) in args.iter().enumerate() {
+        if (arg == "-f" || arg == "--log-file") && idx + 1 < args.len() {
+            let val = &args[idx + 1];
+            if !val.is_empty() && !val.starts_with('-') {
+                return Some(val.clone());
+            }
+        }
+        for flag in ["-f=", "--log-file="] {
             if let Some(val) = arg.strip_prefix(flag) {
                 if !val.is_empty() {
                     return Some(val.to_string());
@@ -1009,6 +1042,7 @@ mod tests {
             served_model: None,
             pids: pids.to_vec(),
             container_id: None,
+            log_file: None,
         }
     }
 

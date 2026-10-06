@@ -77,6 +77,17 @@ describe('requestSummary', () => {
     expect(summary).toEqual({ count: 3, medianTps: 100, medianTtftMs: 210 })
   })
 
+  it('drops null-valued fields from the medians rather than counting them as zero', () => {
+    // vLLM's access-log rows carry no token counts: they still count as
+    // requests, but they must not drag the throughput/TTFT medians toward 0.
+    const summary = requestSummary([
+      request({ tokens_per_sec: 100, ttft_ms: 200 }),
+      request({ tokens_per_sec: 200, ttft_ms: 400 }),
+      request({ tokens_per_sec: null, ttft_ms: null, source: 'log' }),
+    ])
+    expect(summary).toEqual({ count: 3, medianTps: 150, medianTtftMs: 300 })
+  })
+
   it('averages the middle pair on an even count', () => {
     const summary = requestSummary([
       request({ tokens_per_sec: 100, ttft_ms: 200 }),

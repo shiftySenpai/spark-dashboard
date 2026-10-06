@@ -2,6 +2,7 @@ pub mod detector;
 pub mod histogram;
 pub mod llama_cpp;
 pub mod prometheus;
+pub mod request_log;
 pub mod strata;
 pub mod vllm;
 pub mod warmup;
@@ -221,13 +222,37 @@ pub struct EngineMetrics {
 }
 
 /// A per-request inference metric record.
-/// Empty for now; future engine adapter integration will populate these.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+///
+/// `EngineSnapshot::recent_requests` carries the requests that finished
+/// **since the previous snapshot** — a delta, not a window: the frontend
+/// history store accumulates them across snapshots, and the HEC idle gate
+/// only reads the newest one. Delta semantics keep the wire small for
+/// engines (Strata) that re-report the same finished requests every poll.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct RecentRequest {
     pub start_ms: u64,
     pub end_ms: u64,
-    pub tokens_per_sec: f64,
-    pub ttft_ms: f64,
+    /// Decode throughput for this request. `None` when the source cannot see
+    /// token counts (vLLM's uvicorn access lines carry none).
+    #[serde(default)]
+    pub tokens_per_sec: Option<f64>,
+    #[serde(default)]
+    pub ttft_ms: Option<f64>,
+    #[serde(default)]
+    pub prompt_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    /// Engine-reported finish reason ("stop", "length", "cancel", …).
+    #[serde(default)]
+    pub finish: Option<String>,
+    /// Per-request prefix-cache hit rate (0.0-1.0), engine-reported.
+    #[serde(default)]
+    pub prefix_cache_hit_rate: Option<f64>,
+    /// Provenance: "engine" = the engine reported the request itself
+    /// (Strata's `/metrics` history); "log" = parsed from the engine's own
+    /// log output, where start/end are arrival-time approximations.
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -286,6 +311,13 @@ pub trait EngineAdapter: Send + Sync {
     fn metrics_disabled(&self) -> bool {
         false
     }
+    /// Requests that finished since the previous call to this method. The
+    /// poll loop calls it once per tick and merges the result with the
+    /// engine's log-tail rows into `EngineSnapshot::recent_requests`.
+    /// Default empty for engines with no per-request source of their own.
+    async fn get_recent_requests(&self) -> Vec<RecentRequest> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +359,10 @@ pub struct EngineState {
     /// Docker container id captured at detection time (Linux Docker scan only).
     /// Forwarded into each `EngineSnapshot` for the log viewer to consume.
     pub container_id: Option<String>,
+    /// Per-engine log tail feeding `recent_requests` for engines without a
+    /// native per-request API (vLLM, llama.cpp). Attached by `request_log::
+    /// ensure` once a log source (container id or `-f` log file) is known.
+    pub request_log: Option<request_log::RequestLog>,
 }
 
 impl EngineState {
@@ -344,6 +380,7 @@ impl EngineState {
             model_attempted_at: None,
             pids: Vec::new(),
             container_id: None,
+            request_log: None,
         }
     }
 
@@ -659,6 +696,14 @@ pub async fn engine_collector_loop(
                             d.container_id,
                         );
                     }
+                    // Attach (or re-attach after a container change) the log
+                    // tail that feeds per-request rows for vLLM/llama.cpp.
+                    request_log::ensure(
+                        &mut state.request_log,
+                        &d.engine_type,
+                        d.container_id.as_deref(),
+                        d.log_file.as_deref(),
+                    );
                 }
 
                 // Engines absent from this pass (stopped, restarting, probe
@@ -717,6 +762,13 @@ pub async fn engine_collector_loop(
                             false
                         };
 
+                        // Per-request rows: adapter-native (Strata) plus
+                        // anything the log tail parsed since the last tick.
+                        let mut recent_requests = state.adapter.get_recent_requests().await;
+                        if let Some(log) = state.request_log.as_mut() {
+                            recent_requests.extend(log.poll().await);
+                        }
+
                         snapshots.push(EngineSnapshot {
                             engine_type: state.adapter.engine_type(),
                             endpoint: state.adapter.endpoint().to_string(),
@@ -725,7 +777,7 @@ pub async fn engine_collector_loop(
                             model_metadata_error: state.model_metadata_error,
                             metrics,
                             metrics_disabled,
-                            recent_requests: Vec::new(),
+                            recent_requests,
                             deployment_mode: state.deployment_mode.clone(),
                             gpu_indexes: Vec::new(),
                             pids: state.pids.clone(),

@@ -30,12 +30,12 @@ import type { PanelContentProps } from '../panelRegistry'
  * The bars are positioned against the panel's window, so the axis is the same
  * one the charts beside it use and two panels can be read together.
  *
- * **No shipped backend fills `recent_requests` yet.** `EngineSnapshot` carries
- * the field and the wire format is settled, but both construction sites in
- * `src/engines/mod.rs` pass an empty vector — per-request metrics wait on the
- * engine adapters. Until one lands, this panel is correct and empty on a real
- * host, which is why the no-requests state is worded as a quiet window rather
- * than as a fault.
+ * Fidelity follows the source, and each row says where it came from on the
+ * wire (`source`): Strata reports its finished requests natively, so its rows
+ * are exact; llama.cpp rows are parsed from its per-request timing log and
+ * carry exact tokens/timings at arrival-time placement; vLLM's only
+ * per-request trace is its uvicorn access log, so those rows are a timestamp
+ * with no token counts — a dash, never a guess.
  */
 export function InferenceTimelinePanel({ panel }: PanelContentProps) {
   const { target, requests } = useEngineRequests(panel)
@@ -103,7 +103,9 @@ function RequestRow({
           className="absolute inset-y-0 rounded-sm"
           style={{
             left: `${leftPercent}%`,
-            width: `${widthPercent}%`,
+            // vLLM rows have no duration (access-log lines): give them a
+            // sliver so a request is at least visible where it landed.
+            width: `${Math.max(widthPercent, 0.5)}%`,
             backgroundColor: NVIDIA_THEME.accent,
           }}
         />

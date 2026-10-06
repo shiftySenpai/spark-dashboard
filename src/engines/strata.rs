@@ -20,10 +20,11 @@
 
 use super::{
     EngineAdapter, EngineMetrics, EngineStatus, EngineType, ModelInfo, ModelMetadataError,
-    ModelResolution,
+    ModelResolution, RecentRequest,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub struct StrataAdapter {
@@ -32,6 +33,17 @@ pub struct StrataAdapter {
     /// Model identity recovered from the launch command line. Strata's
     /// `/v1/models` answers openly, so this is only ever a fallback.
     served_model: Option<String>,
+    /// Finished requests seen by the last `/metrics` poll but not yet handed
+    /// to the poll loop. Strata re-reports its last 12 requests every poll,
+    /// so `last_time` marks what was already emitted; a newest `time` below
+    /// it means the engine restarted and its history is new again.
+    pending: Mutex<StrataPending>,
+}
+
+#[derive(Default)]
+struct StrataPending {
+    last_time: f64,
+    rows: Vec<RecentRequest>,
 }
 
 impl StrataAdapter {
@@ -40,6 +52,7 @@ impl StrataAdapter {
             client,
             endpoint,
             served_model,
+            pending: Mutex::new(StrataPending::default()),
         }
     }
 }
@@ -52,6 +65,59 @@ impl StrataAdapter {
 struct StrataMetricsReply {
     totals: StrataTotals,
     live: StrataLive,
+    /// The engine's history FIFO: the last 12 finished requests (all kept
+    /// ones with `?requests=all`). This is what the engine's own "Recent
+    /// requests" panel reads.
+    #[serde(default)]
+    requests: Vec<StrataRequestRecord>,
+}
+
+/// One finished request from Strata's history FIFO. `time` is the request's
+/// start (epoch seconds); the rest are the engine's own per-request
+/// measurements from the DONE line.
+#[derive(Deserialize)]
+struct StrataRequestRecord {
+    time: f64,
+    #[serde(default)]
+    duration_s: f64,
+    #[serde(default)]
+    finish: String,
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    prompt_ms: Option<f64>,
+    #[serde(default)]
+    decode_tok_s: Option<f64>,
+    #[serde(default)]
+    hit_rate: Option<f64>,
+}
+
+/// Map history records onto `RecentRequest`s, keeping only those newer than
+/// `last_time` (see `StrataAdapter::pending`). Returns the new rows and the
+/// newest time to remember.
+fn map_requests(records: &[StrataRequestRecord], last_time: f64) -> (Vec<RecentRequest>, f64) {
+    let newest = records.iter().map(|r| r.time).fold(0.0_f64, f64::max);
+    // Engine restarted: its clock's newest request is older than what we
+    // already emitted, so the whole (short) history is new again.
+    let since = if newest < last_time { 0.0 } else { last_time };
+    let rows = records
+        .iter()
+        .filter(|r| r.time > since)
+        .map(|r| RecentRequest {
+            start_ms: (r.time * 1000.0) as u64,
+            end_ms: ((r.time + r.duration_s) * 1000.0) as u64,
+            tokens_per_sec: r.decode_tok_s,
+            ttft_ms: r.prompt_ms,
+            prompt_tokens: Some(r.prompt_tokens),
+            output_tokens: Some(r.output_tokens),
+            finish: (!r.finish.is_empty()).then(|| r.finish.clone()),
+            prefix_cache_hit_rate: r.hit_rate,
+            source: "engine".to_string(),
+        })
+        .collect();
+    (rows, newest.max(last_time))
 }
 
 /// Lifetime totals, settled per request at completion.
@@ -254,7 +320,26 @@ impl EngineAdapter for StrataAdapter {
             return None;
         }
         let reply: StrataMetricsReply = resp.json().await.ok()?;
+        // Cache the per-request history for `get_recent_requests`; the FIFO
+        // arrives with the same poll, no extra request needed.
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (rows, newest) = map_requests(&reply.requests, pending.last_time);
+        pending.rows = rows;
+        pending.last_time = newest;
         Some(map_metrics(reply))
+    }
+
+    async fn get_recent_requests(&self) -> Vec<RecentRequest> {
+        std::mem::take(
+            &mut self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .rows,
+        )
     }
 }
 
@@ -403,5 +488,35 @@ mod tests {
             "qwen3.8-flash-next-iq3_s"
         );
         assert_eq!(display_model("/x/packs/iq3_s").name, "iq3_s");
+    }
+
+    fn record(time: f64) -> StrataRequestRecord {
+        StrataRequestRecord {
+            time,
+            duration_s: 1.0,
+            finish: "stop".to_string(),
+            prompt_tokens: 10,
+            output_tokens: 5,
+            prompt_ms: Some(100.0),
+            decode_tok_s: Some(50.0),
+            hit_rate: Some(1.0),
+        }
+    }
+
+    #[test]
+    fn request_history_is_a_delta_and_survives_a_restart() {
+        let (rows, last) = map_requests(&[record(100.0), record(101.0)], 0.0);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(last, 101.0);
+        assert_eq!(rows[0].source, "engine");
+        assert_eq!(rows[0].end_ms - rows[0].start_ms, 1000);
+        assert_eq!(rows[0].finish.as_deref(), Some("stop"));
+        // The same FIFO re-reported on the next poll yields nothing new.
+        let (rows, last) = map_requests(&[record(100.0), record(101.0)], last);
+        assert!(rows.is_empty());
+        assert_eq!(last, 101.0);
+        // Engine restarted: a newer-looking history with older times is new.
+        let (rows, _) = map_requests(&[record(50.0)], last);
+        assert_eq!(rows.len(), 1);
     }
 }

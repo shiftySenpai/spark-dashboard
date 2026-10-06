@@ -23,6 +23,10 @@
 //!   healthy endpoint always has recent connectivity data.
 //! - GPU events and engine model events are never idle-gated; model events
 //!   fire only on first detection or model change.
+//! - Once per process, the exporter queues a `spark_dashboard_startup` event
+//!   carrying the running version, hostname and IP, so a Splunk search can
+//!   filter by the build a host is running. It rides the buffered-events path,
+//!   so it lands on the first successful contact and is never repeated.
 
 //! - 403 (bad token) and 400 code 7 (index not allowed) count as *reachable* —
 //!   the network is up; the configuration problem is surfaced through the
@@ -33,6 +37,7 @@ use crate::metrics::{gpu::GpuEvent, MetricsSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
+use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -57,6 +62,11 @@ const SOURCE: &str = "spark-dashboard";
 const METRICS_SOURCTYPE: &str = "spark_dashboard";
 const EVENTS_SOURCTYPE: &str = "spark_dashboard_gpu_event";
 const MODEL_EVENT_SOURCTYPE: &str = "spark_dashboard_engine_model";
+const STARTUP_SOURCETYPE: &str = "spark_dashboard_startup";
+/// Fallback port for the local-IP route lookup when the HEC URL omits one.
+/// Splunk's default HEC port; the port is irrelevant to route selection (no
+/// packet is ever sent), it only has to be a valid one.
+const DEFAULT_HEC_PORT: u16 = 8088;
 
 fn default_index() -> String {
     "metrics".to_string()
@@ -672,6 +682,69 @@ pub fn build_test_event(host: &str, index: &str, now_ms: u64) -> Value {
     })
 }
 
+/// The once-per-process record of which build connected to this endpoint, so a
+/// Splunk search can key on the version (`sourcetype=spark_dashboard_startup
+/// event.spark_dashboard_version=0.15.0`). A plain event in the conventional
+/// `events_index`, never a metric, and — unlike the connectivity heartbeat —
+/// sent exactly once per start rather than every probe interval.
+/// `ip_address` is `null` when the route to the endpoint could not be resolved.
+pub fn build_startup_event(host: &str, ip: Option<&str>, events_index: &str, now_ms: u64) -> Value {
+    json!({
+        "time": now_ms / 1000,
+        "host": host,
+        "source": SOURCE,
+        "sourcetype": STARTUP_SOURCETYPE,
+        "index": events_index,
+        "event": {
+            "spark_dashboard_version": env!("CARGO_PKG_VERSION"),
+            "hostname": host,
+            "ip_address": ip,
+        },
+    })
+}
+
+/// The address this host would use to reach the HEC endpoint — the IP a Splunk
+/// search can key on, and the one that is actually meaningful on a multi-homed
+/// box. A UDP `connect` sends nothing: it only asks the kernel to pick a route,
+/// so this needs no new dependency and no reachable endpoint. `None` when the
+/// URL's host cannot be resolved (DNS failure) or carries no host at all.
+fn local_ip_for(endpoint: &str) -> Option<String> {
+    let authority = endpoint.split_once("://")?.1.split('/').next()?;
+    // "host", "host:port", or "[v6-literal]:port". The port never matters for
+    // route selection — it only has to come off so the host parses.
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(rest) => {
+            let (literal, tail) = rest.split_once(']')?;
+            (
+                literal.to_string(),
+                tail.strip_prefix(':')
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .unwrap_or(DEFAULT_HEC_PORT),
+            )
+        }
+        None => match authority.rsplit_once(':') {
+            Some((h, p)) if p.parse::<u16>().is_ok() => {
+                (h.to_string(), p.parse().unwrap_or(DEFAULT_HEC_PORT))
+            }
+            _ => (authority.to_string(), DEFAULT_HEC_PORT),
+        },
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let addr = (host, port).to_socket_addrs().ok()?.next()?;
+    // Bind the family the endpoint actually has, then connect — still no
+    // packet leaves the host, the kernel only reports the route it picked.
+    let socket = std::net::UdpSocket::bind(if addr.ip().is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    })
+    .ok()?;
+    socket.connect(addr).ok()?;
+    socket.local_addr().ok().map(|local| local.ip().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Idle gate
 // ---------------------------------------------------------------------------
@@ -805,6 +878,10 @@ struct Exporter {
     /// (endpoint, model signature) pairs already recorded — model events
     /// fire once per distinct model per endpoint.
     known_models: Vec<(String, String)>,
+    /// Whether this process has queued its `spark_dashboard_startup` version
+    /// record yet. Once per process, not once per target: re-configuring HEC
+    /// mid-session must not re-announce the version.
+    startup_queued: bool,
 }
 
 impl Exporter {
@@ -819,6 +896,7 @@ impl Exporter {
             backlog: VecDeque::new(),
             events: VecDeque::new(),
             known_models: Vec::new(),
+            startup_queued: false,
         }
     }
 
@@ -946,6 +1024,20 @@ pub async fn run_exporter(
             let Ok(snapshot) = serde_json::from_str::<MetricsSnapshot>(&json) else {
                 continue;
             };
+
+            // The version record: queued once per process, on the first tick
+            // that has a usable target, then delivered by the same buffered
+            // path as GPU/model events — so it reaches the endpoint the moment
+            // contact succeeds, and never again afterwards.
+            if !exporter.startup_queued {
+                exporter.startup_queued = true;
+                exporter.push_event(build_startup_event(
+                    &host,
+                    local_ip_for(&target.url).as_deref(),
+                    &target.events_index,
+                    now_ms(),
+                ));
+            }
 
             // GPU events are never idle-gated and are buffered even while
             // down — they are the page-worthy data.
@@ -1974,7 +2066,9 @@ mod tests {
         assert_eq!(st.last_error, None);
 
         let posts = mock.posts.lock().unwrap().clone();
-        assert_eq!(posts.len(), 1, "one POST per tick, no extras");
+        // The tick's metric batch, then the once-per-process version record
+        // that the events queue flushed right behind it.
+        assert_eq!(posts.len(), 2, "one POST per tick, plus the startup record");
         let array: Value = serde_json::from_str(&posts[0]).unwrap();
         let events = array.as_array().unwrap();
         assert_eq!(events.len(), 1);
@@ -1986,6 +2080,11 @@ mod tests {
             .unwrap()
             .keys()
             .any(|k| k.starts_with("metric_name:")));
+        let startup: Value = serde_json::from_str(&posts[1]).unwrap();
+        assert_eq!(
+            startup.as_array().unwrap()[0]["sourcetype"],
+            STARTUP_SOURCETYPE
+        );
         drop(task);
     }
 
@@ -2102,7 +2201,9 @@ mod tests {
         assert_eq!(st.state, ExportState::Exporting);
 
         let posts = mock.posts.lock().unwrap().clone();
-        assert_eq!(posts.len(), 2, "first tick retried with the second");
+        // The refused batch, the retry, and the startup record the events
+        // queue flushed once contact succeeded.
+        assert_eq!(posts.len(), 3, "first tick retried with the second");
         let first: Value = serde_json::from_str(&posts[0]).unwrap();
         let second: Value = serde_json::from_str(&posts[1]).unwrap();
         assert_eq!(first.as_array().unwrap().len(), 1);
@@ -2110,6 +2211,11 @@ mod tests {
             second.as_array().unwrap().len(),
             2,
             "backlog + fresh snapshot"
+        );
+        let third: Value = serde_json::from_str(&posts[2]).unwrap();
+        assert_eq!(
+            third.as_array().unwrap()[0]["sourcetype"],
+            STARTUP_SOURCETYPE
         );
         drop(task);
     }
@@ -2171,8 +2277,16 @@ mod tests {
         let events = last.as_array().unwrap();
         assert!(events
             .iter()
-            .all(|e| e["sourcetype"] == "spark_dashboard_gpu_event"));
-        assert_eq!(events.len(), 2, "both GPU events survived the outage");
+            .all(|e| e["sourcetype"] == "spark_dashboard_gpu_event"
+                || e["sourcetype"] == STARTUP_SOURCETYPE));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["sourcetype"] == "spark_dashboard_gpu_event")
+                .count(),
+            2,
+            "both GPU events survived the outage"
+        );
         drop(task);
     }
 
@@ -2393,6 +2507,112 @@ mod tests {
             event["fields"]["metric_name:spark_dashboard.connectivity.test"],
             1
         );
+        drop(task);
+    }
+
+    // -- startup version record --------------------------------------------
+
+    #[test]
+    fn the_startup_event_carries_the_version_host_and_ip() {
+        let event = build_startup_event(
+            "dgx-spark-01",
+            Some("192.168.1.202"),
+            "main",
+            1_723_800_000_000,
+        );
+        assert_eq!(event["time"], 1_723_800_000);
+        assert_eq!(event["host"], "dgx-spark-01");
+        assert_eq!(event["source"], SOURCE);
+        assert_eq!(event["sourcetype"], "spark_dashboard_startup");
+        // A plain event, so the conventional index — never the metrics one.
+        assert_eq!(event["index"], "main");
+        assert_eq!(
+            event["event"]["spark_dashboard_version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(event["event"]["hostname"], "dgx-spark-01");
+        assert_eq!(event["event"]["ip_address"], "192.168.1.202");
+
+        // An unresolvable route is reported as absent, not guessed.
+        let unknown = build_startup_event("dgx-spark-01", None, "main", 1_723_800_000_000);
+        assert!(unknown["event"]["ip_address"].is_null());
+    }
+
+    #[test]
+    fn the_local_ip_is_the_route_to_the_hec_endpoint() {
+        // Loopback answers on any host, so the route lookup is deterministic.
+        assert_eq!(
+            local_ip_for("http://127.0.0.1:8088/collector").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            local_ip_for("https://[::1]").as_deref(),
+            Some("::1"),
+            "a bracketed IPv6 literal keeps its address"
+        );
+        assert_eq!(local_ip_for("not-a-url"), None);
+        assert_eq!(local_ip_for("http://").as_deref(), None);
+        assert_eq!(
+            local_ip_for("http://does-not-exist.invalid:8088/collector"),
+            None,
+            "an unresolvable host yields no IP rather than a wrong one"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_startup_event_reaches_hec_exactly_once_per_process() {
+        // The version record must arrive with the first successful contact and
+        // never again — otherwise every host re-announces its build on every
+        // tick and the index fills with version noise.
+        let mock = start_mock(None, 0).await;
+        let mut target = target();
+        target.url = mock.url.clone();
+        let (tx, rx) = broadcast::channel::<String>(16);
+        let config = SharedHecConfig::new(RwLock::new(Some(target)));
+        let status = SharedExportStatus::new(Mutex::new(ExportStatus::disabled()));
+        let task = tokio::spawn(run_exporter(
+            rx,
+            config,
+            std::path::PathBuf::new(),
+            false,
+            status.clone(),
+            "test-host".into(),
+            Duration::from_millis(100),
+        ));
+
+        for _ in 0..5 {
+            tx.send(active_json()).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        wait_status(&status, Duration::from_secs(3), |s| {
+            s.state == ExportState::Exporting
+        })
+        .await;
+
+        let events: Vec<Value> = mock
+            .posts
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|body| serde_json::from_str::<Vec<Value>>(body).unwrap())
+            .collect();
+        let startup: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["sourcetype"] == STARTUP_SOURCETYPE)
+            .collect();
+        assert_eq!(
+            startup.len(),
+            1,
+            "one version record per process, whatever the tick count"
+        );
+        assert_eq!(
+            startup[0]["event"]["spark_dashboard_version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(startup[0]["host"], "test-host");
+        assert_eq!(startup[0]["event"]["hostname"], "test-host");
+        assert_eq!(startup[0]["event"]["ip_address"], "127.0.0.1");
+        assert_eq!(startup[0]["index"], "main");
         drop(task);
     }
 }

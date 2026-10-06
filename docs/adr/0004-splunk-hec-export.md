@@ -83,6 +83,15 @@ snapshot:
 - **gpu_events** (XID faults, power/thermal) are **not** metrics: they go as
   JSON events to a separate conventional index (`events_index` config field,
   default `main` — a metrics-type index cannot mix events and metrics).
+- **`spark_dashboard_startup`** — one plain event per process start, queued on
+  the first tick that has a usable target and delivered by the same buffered
+  events path, so it lands the moment contact succeeds. It carries
+  `spark_dashboard_version` (the crate version — the same source as `--version`
+  and the header badge), `hostname`, and `ip_address` (the source address of
+  the route to the HEC endpoint, from a packet-free UDP route lookup). Once per
+  start, never per heartbeat: the version stays searchable
+  (`sourcetype=spark_dashboard_startup spark_dashboard_version=0.15.0`) without
+  the index filling with version noise.
 
 ### 3. Idle gating
 

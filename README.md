@@ -502,6 +502,15 @@ the host, in `.env`, or on the CLI.
   recovery.
 - **Idle hosts export nothing.** The silent gap is the record of idleness;
   GPU events are never idle-gated.
+- **The version is in Splunk too — once per start.** On the first successful
+  contact after startup the exporter writes one `spark_dashboard_startup`
+  event to the events index carrying `spark_dashboard_version`, `hostname` and
+  `ip_address`. It is queued once per process, not repeated on every heartbeat,
+  so the index stays clean and a search answers "which hosts run which build":
+
+  ```
+  sourcetype=spark_dashboard_startup spark_dashboard_version=0.14.0
+  ```
 - **Engine container logs** (when the log viewer is enabled) are also
   forwarded to the events index as JSON events — see
   [Log viewer](#log-viewer--enable-log-viewer-linux-only-opt-in).

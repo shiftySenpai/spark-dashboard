@@ -18,12 +18,20 @@ Project-specific. Global rules in `~/.claude/rules/` still apply.
 | ---------------------------------------------------------- | ------------------------------- |
 | `feat:`                                                    | minor                           |
 | `fix:`                                                     | patch                           |
-| `feat!:` / `BREAKING CHANGE:`                              | minor (becomes major after 1.0) |
+| `feat!:` / `BREAKING CHANGE:`                              | minor (we stay pre-1.0 — see below) |
 | `chore`, `docs`, `refactor`, `test`, `ci`, `perf`, `style` | none                            |
 
 "Bump" is version impact only — `chore`/`deps` still appear in the changelog under "Dependencies & Chores" (see `changelog-sections` in `release-please-config.json`); only `docs`/`style`/`refactor`/`test`/`build`/`ci` stay hidden.
 
 Tags: `vX.Y.Z`. After merge, release-please opens a rolling release PR; merging it tags + triggers `publish.yml` (`cargo publish`).
+
+### Propose a version, then ask (standing rule, 2026-10-06)
+
+When a batch of work finishes, **propose the next number and ask the human before anything ships** — never let a bump happen silently through release-please, and never hand-bump to "help". The proposal states: the number, the commit types that justify it, and whether to batch it with in-flight work instead of dripping minors (every `feat` is a minor, so a release per merge makes the number meaningless — merge the rolling release PR at a milestone).
+
+**We stay on `0.x` indefinitely**: no 1.0.0, so `bump-minor-pre-major` semantics hold forever and the number can never signal breakage. A breaking change is `feat!:`/`BREAKING CHANGE:` → still a minor, and the changelog's BREAKING CHANGES section (written like 0.14.0's: names exactly what an operator loses) is the only upgrade warning. Keep scopes stable and few — `(hec) (gpu) (dashboard) (engines) (metrics) (deploy) (docker) (config) (frontend) (ui)` — that grouping, not the number, is what makes a release readable.
+
+`DASHBOARD_SCHEMA_VERSION` is a **separate axis** (the on-disk document contract, bumped on every shape change including additive, with a migration + version test). Never encode it in the app version; do name it in the release notes, since it decides whether an operator's saved config survives the upgrade.
 
 **Never hand-edit the release-please-owned bits**: the `version` fields of `Cargo.toml` and `frontend/package.json`, `.release-please-manifest.json`, and `CHANGELOG.md`. Dependency changes to those same files are fine when driven through the proper tooling (`cargo update`/`cargo add`, `npm install`/`npm update` — which also rewrite `Cargo.lock`/`frontend/package-lock.json`); just leave the `version` fields untouched.
 

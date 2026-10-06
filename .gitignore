@@ -33,7 +33,10 @@ Splunk-App/
 # Local tooling
 deploy-local.sh
 update-spark.sh
+update-remote.sh
 LlamaCppEngine-spec.md
+StrataEngine-spec.md
+StrataDashboard-spec.md
 
 # Generated knowledge graph (local, not versioned)
 graphify-out/

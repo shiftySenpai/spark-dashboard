@@ -16,6 +16,14 @@ describe('supportsCapability', () => {
     expect(supportsCapability('LlamaCpp', 'latencyPercentiles')).toBe(false)
   })
 
+  it('Strata hides the same structural groups as llama.cpp', () => {
+    // No KV-usage gauge, no histograms, no queue-time measurement.
+    expect(supportsCapability('Strata', 'kvCache')).toBe(false)
+    expect(supportsCapability('Strata', 'goodput')).toBe(false)
+    expect(supportsCapability('Strata', 'queueTime')).toBe(false)
+    expect(supportsCapability('Strata', 'latencyPercentiles')).toBe(false)
+  })
+
   it('null (aggregate / unknown type) assumes full support', () => {
     // An all-models view is the union of its members, and a type this build
     // does not know must never blank a panel it might fill.

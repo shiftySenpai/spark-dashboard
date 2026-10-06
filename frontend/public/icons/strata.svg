@@ -1,0 +1,10 @@
+<!-- PLACEHOLDER — replace this file with the official Strata logo.
+     The dashboard references it at /icons/strata.svg; nothing else needs to
+     change when the real mark is sourced. Drawn for the white logo tile. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#76B900">
+    <path d="M16 3 31 10.5 16 18 1 10.5Z"/>
+    <path d="M1 15.5 16 23l15-7.5v4L16 27 1 19.5Z" opacity=".72"/>
+    <path d="M1 21.5 16 29l15-7.5v4L16 33 1 25.5Z" opacity=".45"/>
+  </g>
+</svg>

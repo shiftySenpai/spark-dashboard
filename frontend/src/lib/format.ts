@@ -178,6 +178,7 @@ export function engineDisplayName(engineType: EngineType): string {
   const names: Record<EngineType, string> = {
     Vllm: 'vLLM',
     LlamaCpp: 'llama.cpp',
+    Strata: 'Strata',
   }
   return names[engineType]
 }
@@ -187,6 +188,9 @@ export function engineIconSrc(engineType: EngineType): string {
   const icons: Record<EngineType, string> = {
     Vllm: '/icons/vllm.svg',
     LlamaCpp: '/icons/llama-cpp.svg',
+    // Placeholder until the official Strata logo is sourced — the mark
+    // renders as stacked strata layers in the dashboard's green.
+    Strata: '/icons/strata.svg',
   }
   return icons[engineType]
 }

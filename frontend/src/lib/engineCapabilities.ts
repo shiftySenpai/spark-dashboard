@@ -25,6 +25,10 @@ export type EngineCapability =
 const UNSUPPORTED: Record<EngineType, ReadonlySet<EngineCapability>> = {
   Vllm: new Set(),
   LlamaCpp: new Set<EngineCapability>(['kvCache', 'goodput', 'queueTime', 'latencyPercentiles']),
+  // Strata reports no KV-usage gauge, no histograms, and no queue-time
+  // measurement (it exposes the queue depth, not the wait) — same hidden
+  // groups as llama.cpp for now; histograms are on Strata's roadmap.
+  Strata: new Set<EngineCapability>(['kvCache', 'goodput', 'queueTime', 'latencyPercentiles']),
 }
 
 /**

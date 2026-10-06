@@ -2,6 +2,7 @@ pub mod detector;
 pub mod histogram;
 pub mod llama_cpp;
 pub mod prometheus;
+pub mod strata;
 pub mod vllm;
 pub mod warmup;
 
@@ -19,6 +20,7 @@ use tokio::sync::RwLock;
 pub enum EngineType {
     Vllm,
     LlamaCpp,
+    Strata,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
@@ -32,6 +34,7 @@ impl std::fmt::Display for EngineType {
         match self {
             EngineType::Vllm => write!(f, "vLLM"),
             EngineType::LlamaCpp => write!(f, "llama.cpp"),
+            EngineType::Strata => write!(f, "Strata"),
         }
     }
 }
@@ -526,6 +529,7 @@ pub fn create_adapter(
         EngineType::LlamaCpp => Box::new(llama_cpp::LlamaCppAdapter::new(
             client, endpoint, model_hint, api_key,
         )),
+        EngineType::Strata => Box::new(strata::StrataAdapter::new(client, endpoint, model_hint)),
     }
 }
 
@@ -582,7 +586,15 @@ pub async fn engine_collector_loop(
         .build()
         .unwrap_or_default();
 
-    let mut sys = sysinfo::System::new();
+    // `System::new()` refreshes no process fields at all — notably not
+    // `cmd()`, which stays empty for every process. The cmdline fallback scan
+    // below (and with it `python -m vllm...` and the Strata front) needs it,
+    // so request it explicitly; the `read_proc_cmdline` path stays as the
+    // safety net for entries sysinfo still reports cmd-less.
+    let mut sys =
+        sysinfo::System::new_with_specifics(sysinfo::RefreshKind::nothing().with_processes(
+            sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
+        ));
     let mut engine_map: HashMap<(EngineType, String), EngineState> = HashMap::new();
 
     // Seed manual overrides into the engine map at startup (D-12)

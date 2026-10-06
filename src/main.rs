@@ -255,6 +255,7 @@ async fn run_server_inner(args: RunArgs) -> Result<(), Box<dyn std::error::Error
         .filter_map(|(engine_str, url)| {
             let engine_type = match engine_str.to_lowercase().as_str() {
                 "vllm" => EngineType::Vllm,
+                "strata" => EngineType::Strata,
                 unknown => {
                     tracing::warn!("Unknown engine type '{}', ignoring override", unknown);
                     return None;

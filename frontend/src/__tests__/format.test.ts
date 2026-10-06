@@ -154,6 +154,7 @@ describe('engineDisplayName', () => {
   it('names every engine type the wire can carry', () => {
     expect(engineDisplayName('Vllm')).toBe('vLLM')
     expect(engineDisplayName('LlamaCpp')).toBe('llama.cpp')
+    expect(engineDisplayName('Strata')).toBe('Strata')
   })
 })
 
@@ -161,6 +162,7 @@ describe('engineIconSrc', () => {
   it('maps every engine type to a shipped icon', () => {
     expect(engineIconSrc('Vllm')).toBe('/icons/vllm.svg')
     expect(engineIconSrc('LlamaCpp')).toBe('/icons/llama-cpp.svg')
+    expect(engineIconSrc('Strata')).toBe('/icons/strata.svg')
   })
 })
 

@@ -34,6 +34,7 @@ const ENGINE_BINARIES: &[(&str, EngineType, &str)] = &[
         EngineType::LlamaCpp,
         "http://localhost:8080",
     ),
+    ("strata", EngineType::Strata, "http://localhost:8095"),
 ];
 
 /// The port vLLM serves on when it is not told otherwise. Used wherever a
@@ -140,6 +141,9 @@ fn cmdline_matches_engine(arg: &str, engine_type: &EngineType) -> bool {
             arg == "vllm" || arg.ends_with("/vllm") || arg.contains("vllm.entrypoints")
         }
         EngineType::LlamaCpp => arg == "llama-server" || arg.ends_with("/llama-server"),
+        // The native engine binary (`.../engine/strata`) and the front's
+        // `--engine strata` flag both identify Strata.
+        EngineType::Strata => arg == "strata" || arg.ends_with("/strata"),
     }
 }
 
@@ -179,7 +183,14 @@ fn detect_by_process(sys: &sysinfo::System) -> Vec<DetectedEngine> {
         // host-networking) where the process name is `python`, not `vllm`.
         // For llama.cpp the binary is natively named `llama-server`, so the
         // direct name match above usually suffices — this is a safety net.
-        if procs.is_empty() {
+        //
+        // Strata runs as two processes: the native engine (name-matched, but
+        // it carries no `--port` — the HTTP front is its parent) and the
+        // Python front (cmdline-matched via `--engine strata`, carrying the
+        // port). Both scans must run for Strata so the front's endpoint and
+        // the engine's PID tree land on the same candidate; the endpoint
+        // merge and the health probe sort out the rest.
+        if procs.is_empty() || matches!(engine_type, EngineType::Strata) {
             let matched: Vec<_> = sys
                 .processes()
                 .values()
@@ -191,7 +202,12 @@ fn detect_by_process(sys: &sysinfo::System) -> Vec<DetectedEngine> {
                     })
                 })
                 .collect();
-            procs = matched;
+            // Union, not replace: for Strata both scans hit different
+            // processes (name → the native engine, cmdline → the front), and
+            // both are needed — the front carries the port, the engine the
+            // GPU PIDs; the endpoint merge and PID-tree expansion tie them
+            // together.
+            procs.extend(matched);
         }
 
         // Emit one DetectedEngine per distinct endpoint. Multi-instance native
@@ -218,6 +234,9 @@ fn detect_by_process(sys: &sysinfo::System) -> Vec<DetectedEngine> {
             let served_model = match engine_type {
                 EngineType::Vllm => parse_model_from_args(&cmd),
                 EngineType::LlamaCpp => parse_model_from_args_llama(&cmd),
+                // Strata's model comes from a config JSON, not a command-line
+                // model flag; its `/v1/models` answers openly.
+                EngineType::Strata => None,
             };
             let pid = p.pid().as_u32();
             match seen_endpoints.get(&endpoint) {
@@ -670,16 +689,22 @@ fn container_engine_type(
 ) -> Option<(EngineType, bool)> {
     let named_vllm = names.iter().any(|n| n.to_lowercase().contains("vllm"));
     let named_llama = names.iter().any(|n| n.to_lowercase().contains("llama"));
+    let named_strata = names.iter().any(|n| n.to_lowercase().contains("strata"));
     let is_vllm = image.contains("vllm") || command.contains("vllm");
     let is_llama = image.contains("llama.cpp") || command.contains("llama-server");
+    let is_strata = image.contains("strata") || command.contains("strata");
     if is_vllm {
         Some((EngineType::Vllm, true))
     } else if is_llama {
         Some((EngineType::LlamaCpp, true))
+    } else if is_strata {
+        Some((EngineType::Strata, true))
     } else if named_vllm {
         Some((EngineType::Vllm, false))
     } else if named_llama {
         Some((EngineType::LlamaCpp, false))
+    } else if named_strata {
+        Some((EngineType::Strata, false))
     } else {
         None
     }
@@ -693,6 +718,9 @@ fn is_engine_process(line: &str, engine_type: &EngineType) -> bool {
         EngineType::LlamaCpp => line
             .split_whitespace()
             .any(|arg| arg == "llama-server" || arg.ends_with("/llama-server")),
+        EngineType::Strata => line.split_whitespace().any(|arg| {
+            arg == "strata" || arg.ends_with("/strata") || arg.ends_with("serve/server.py")
+        }),
     }
 }
 
@@ -702,6 +730,7 @@ fn is_engine_process(line: &str, engine_type: &EngineType) -> bool {
 fn parse_model_from_command_str_engine(cmd: &str, engine_type: &EngineType) -> Option<String> {
     match engine_type {
         EngineType::Vllm => parse_model_from_command_str(cmd),
+        EngineType::Strata => None,
         EngineType::LlamaCpp => {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             for (i, p) in parts.iter().enumerate() {
@@ -787,8 +816,8 @@ async fn probe_engine(client: &reqwest::Client, candidate: &DetectedEngine) -> b
     let timeout = Duration::from_secs(2);
 
     match candidate.engine_type {
-        // Both engines expose the same liveness endpoint.
-        EngineType::Vllm | EngineType::LlamaCpp => {
+        // All engines expose the same liveness endpoint.
+        EngineType::Vllm | EngineType::LlamaCpp | EngineType::Strata => {
             // GET /health -- 200 = healthy
             client
                 .get(format!("{}/health", candidate.endpoint))
@@ -1108,6 +1137,84 @@ mod tests {
         ));
         assert!(!cmdline_matches_engine("llama-server", &EngineType::Vllm));
         assert!(cmdline_matches_engine("vllm", &EngineType::Vllm));
+    }
+
+    #[test]
+    fn cmdline_matches_strata_front_and_engine() {
+        // The front carries `--engine strata`; the native engine's argv[0]
+        // ends with `/strata`. Neither form matches the other engines.
+        assert!(cmdline_matches_engine("strata", &EngineType::Strata));
+        assert!(cmdline_matches_engine(
+            "/home/x/Strata/engine/strata",
+            &EngineType::Strata
+        ));
+        assert!(!cmdline_matches_engine(
+            "/home/x/Strata/engine/strata-vision",
+            &EngineType::Strata
+        ));
+        assert!(!cmdline_matches_engine("strata", &EngineType::LlamaCpp));
+    }
+
+    #[test]
+    fn strata_front_cmdline_yields_its_port() {
+        let args = to_args(&[
+            "/home/x/Strata/.venv/bin/python",
+            "/home/x/Strata/serve/server.py",
+            "--engine",
+            "strata",
+            "--config",
+            "/home/x/Strata/strata-iq3_s.json",
+            "--port",
+            "8080",
+        ]);
+        assert_eq!(
+            parse_endpoint_from_args(&args, "http://localhost:8095").as_deref(),
+            Some("http://localhost:8080"),
+        );
+        // The native engine process carries no port — it falls to the default.
+        let native = to_args(&[
+            "/home/x/Strata/engine/strata",
+            "--serve",
+            "--pack",
+            "/x/iq3_s",
+        ]);
+        assert_eq!(
+            parse_endpoint_from_args(&native, "http://localhost:8095").as_deref(),
+            Some("http://localhost:8095"),
+        );
+    }
+
+    #[test]
+    fn container_engine_type_recognizes_strata() {
+        let named = |n: &str| vec![n.to_string()];
+        assert_eq!(
+            container_engine_type("strata/serve:latest", "", &[]),
+            Some((EngineType::Strata, true))
+        );
+        assert_eq!(
+            container_engine_type("img", "/app/serve/server.py --engine strata", &[]),
+            Some((EngineType::Strata, true))
+        );
+        assert_eq!(
+            container_engine_type("img", "sleep infinity", &named("strata-front")),
+            Some((EngineType::Strata, false))
+        );
+    }
+
+    #[test]
+    fn docker_top_rows_match_strata() {
+        assert!(is_engine_process(
+            "1030072 /home/x/Strata/.venv/bin/python /home/x/Strata/serve/server.py --engine strata --port 8080",
+            &EngineType::Strata
+        ));
+        assert!(is_engine_process(
+            "1030213 /home/x/Strata/engine/strata --serve --pack /x/iq3_s",
+            &EngineType::Strata
+        ));
+        assert!(!is_engine_process(
+            "1 root sleep infinity",
+            &EngineType::Strata
+        ));
         assert!(!cmdline_matches_engine("vllm", &EngineType::LlamaCpp));
     }
 

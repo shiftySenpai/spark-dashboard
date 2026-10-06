@@ -114,6 +114,12 @@ struct Slot {
     /// generated so far). Absent or empty while the slot is idle.
     #[serde(default)]
     next_token: Vec<NextToken>,
+    /// Prompt tokens already prefilled for the in-flight task — the live
+    /// input-side counterpart of `next_token[].n_decoded`. Like the other
+    /// mid-request fields it persists on idle slots with its last value, so
+    /// only processing slots may contribute it.
+    #[serde(default)]
+    n_prompt_tokens_processed: i64,
 }
 
 /// A `next_token` array element of a `/slots` entry. `n_decoded` is the
@@ -124,6 +130,32 @@ struct Slot {
 struct NextToken {
     #[serde(default)]
     n_decoded: i64,
+}
+
+/// Tokens generated so far across a slot's in-flight task(s).
+fn slot_decoded(slot: &Slot) -> i64 {
+    slot.next_token.iter().map(|t| t.n_decoded).sum()
+}
+
+/// The in-flight task progress not yet reflected in the lifetime counters:
+/// `(generated, prompt-processed)` summed over processing slots only — idle
+/// slots carry stale mid-request fields with their last values.
+fn inflight_totals(slots: &[Slot]) -> (i64, i64) {
+    slots
+        .iter()
+        .filter(|s| s.is_processing)
+        .map(|s| (slot_decoded(s), s.n_prompt_tokens_processed))
+        .fold((0, 0), |(g, p), (dg, dp)| (g + dg, p + dp))
+}
+
+/// What one `/slots` poll yields: the post-attach request count, the live
+/// generation rate, and the in-flight token progress (see
+/// [`inflight_totals`]).
+struct SlotsView {
+    requests: u64,
+    live_gen_tps: Option<f64>,
+    inflight_generated: i64,
+    inflight_prompt_processed: i64,
 }
 
 /// Live generation rate (tokens/s) from per-slot `/slots` progress.
@@ -145,7 +177,7 @@ fn live_generation_rate(
             continue;
         }
         any_processing = true;
-        let decoded: i64 = slot.next_token.iter().map(|t| t.n_decoded).sum();
+        let decoded: i64 = slot_decoded(slot);
         if let Some(&(task, prev_n, pt)) = prev.get(&slot.id) {
             // Re-baseline (no rate this tick) when the task changed or the
             // counter regressed — `decoded` is not comparable then.
@@ -259,21 +291,32 @@ impl LlamaCppAdapter {
     /// `/slots` failure (endpoint disabled / error) the previous count is
     /// returned unchanged and the live rate is `None` — request counting
     /// degrades gracefully rather than resetting.
-    async fn observe_slots(&self) -> (u64, Option<f64>) {
+    async fn observe_slots(&self) -> SlotsView {
         let url = format!("{}/slots", self.endpoint);
         let body = match self.get_text(url).await {
             Some(b) => b,
             None => {
-                return (*self.requests_started.lock().await, None);
+                return SlotsView {
+                    requests: *self.requests_started.lock().await,
+                    live_gen_tps: None,
+                    inflight_generated: 0,
+                    inflight_prompt_processed: 0,
+                };
             }
         };
         let slots: Vec<Slot> = match serde_json::from_str(&body) {
             Ok(s) => s,
             Err(e) => {
                 tracing::debug!(endpoint = %self.endpoint, error = %e, "/slots parse failed");
-                return (*self.requests_started.lock().await, None);
+                return SlotsView {
+                    requests: *self.requests_started.lock().await,
+                    live_gen_tps: None,
+                    inflight_generated: 0,
+                    inflight_prompt_processed: 0,
+                };
             }
         };
+        let (inflight_generated, inflight_prompt_processed) = inflight_totals(&slots);
 
         let now = Instant::now();
         let mut state = self.slot_state.lock().await;
@@ -300,12 +343,17 @@ impl LlamaCppAdapter {
             gen.retain(|id, _| slots.iter().any(|s| s.id == *id && s.is_processing));
             for slot in &slots {
                 if slot.is_processing {
-                    let decoded: i64 = slot.next_token.iter().map(|t| t.n_decoded).sum();
+                    let decoded: i64 = slot_decoded(slot);
                     gen.insert(slot.id, (slot.id_task, decoded, now));
                 }
             }
         }
-        (*started, live)
+        SlotsView {
+            requests: *started,
+            live_gen_tps: live,
+            inflight_generated,
+            inflight_prompt_processed,
+        }
     }
 }
 
@@ -430,8 +478,12 @@ impl EngineAdapter for LlamaCppAdapter {
         let raw = parse_prometheus_text(&body)?;
 
         // Request count from /slots (post-attach, approximate) + the live
-        // generation rate from per-slot progress (see `slot_gen`).
-        let (requests, live_gen_tps) = self.observe_slots().await;
+        // generation rate and in-flight token progress from per-slot progress
+        // (see `slot_gen`). `/metrics` is fetched *before* `/slots`, so a job
+        // completing between the two fetches is at worst one tick late in the
+        // totals — never counted twice.
+        let view = self.observe_slots().await;
+        let requests = view.requests;
         let warming_up = requests < 1;
 
         // Baseline at attach + restart detection.
@@ -466,7 +518,7 @@ impl EngineAdapter for LlamaCppAdapter {
         // --- Live per-poll rates (window throughput; 0 when idle) ---
         // Generation: live per-slot `n_decoded` progress from `/slots` (the
         // lifetime counter only flushes at request completion — `slot_gen`).
-        let tokens_per_sec = live_gen_tps;
+        let tokens_per_sec = view.live_gen_tps;
         // Prompt: per-poll delta of the lifetime counter (prefill completes
         // within a few ticks, so its completion-time flush is not
         // misleadingly spiky).
@@ -543,12 +595,20 @@ impl EngineAdapter for LlamaCppAdapter {
         let prefix_cache_queries_total =
             (delta.prompt_cached + delta.prompt_tokens).max(0.0) as u64;
 
-        // --- Cumulative (engine-lifetime) totals, read from raw ---
+        // --- Cumulative (engine-lifetime) totals ---
+        // The raw counters only advance at slot reset (request completion), so
+        // a running job would leave the token panels frozen and then jumping
+        // by the whole request. Adding the in-flight `/slots` progress makes
+        // them tick per poll; at completion the progress folds into the
+        // counter and the sum lands on the exact final value.
         let total_generation_tokens = raw
             .counters
             .get(C_PREDICT_TOKENS)
-            .map(|v| v.max(0.0) as u64);
-        let total_prompt_tokens = raw.counters.get(C_PROMPT_TOKENS).map(|v| v.max(0.0) as u64);
+            .map(|v| (v.max(0.0) as i64 + view.inflight_generated).max(0) as u64);
+        let total_prompt_tokens = raw
+            .counters
+            .get(C_PROMPT_TOKENS)
+            .map(|v| (v.max(0.0) as i64 + view.inflight_prompt_processed).max(0) as u64);
 
         // --- Speculative decoding (raw lifetime counters; present but 0 without
         // a draft model) ---
@@ -819,15 +879,66 @@ mod tests {
     fn parses_slots_live_progress() {
         let body = r#"[
             {"id":0,"n_ctx":8192,"is_processing":false,"id_task":7,"next_token":[{"n_remain":-1,"n_decoded":0}]},
-            {"id":1,"n_ctx":8192,"is_processing":true,"id_task":8,"next_token":[{"n_remain":100,"n_decoded":42}]},
+            {"id":1,"n_ctx":8192,"is_processing":true,"id_task":8,"n_prompt_tokens_processed":17,"next_token":[{"n_remain":100,"n_decoded":42}]},
             {"id":2,"n_ctx":8192,"is_processing":true}
         ]"#;
         let slots: Vec<Slot> = serde_json::from_str(body).expect("parse");
         assert_eq!(slots[1].id_task, 8);
         assert_eq!(slots[1].next_token[0].n_decoded, 42);
+        assert_eq!(slots[1].n_prompt_tokens_processed, 17);
         // `next_token`/`id_task` are optional (older builds may omit them).
         assert_eq!(slots[2].id_task, 0);
         assert!(slots[2].next_token.is_empty());
+    }
+
+    /// In-flight totals sum processing slots only — an idle slot's stale
+    /// mid-request fields must not leak into the live totals.
+    #[test]
+    fn inflight_totals_sum_processing_slots_only() {
+        let body = r#"[
+            {"id":0,"is_processing":true,"id_task":5,"n_prompt_tokens_processed":20,"next_token":[{"n_decoded":30}]},
+            {"id":1,"is_processing":false,"id_task":4,"n_prompt_tokens_processed":888,"next_token":[{"n_decoded":999}]}
+        ]"#;
+        let slots: Vec<Slot> = serde_json::from_str(body).expect("parse");
+        assert_eq!(inflight_totals(&slots), (30, 20));
+    }
+
+    /// End-to-end: the reported lifetime totals carry the in-flight `/slots`
+    /// progress on top of the (completion-flushed) `/metrics` counters.
+    #[tokio::test]
+    async fn totals_include_inflight_slot_progress() {
+        use axum::routing::get;
+
+        async fn metrics() -> String {
+            metrics_body(
+                &[
+                    ("tokens_predicted_total", 100.0),
+                    ("prompt_tokens_total", 50.0),
+                ],
+                &[("requests_processing", 1.0)],
+            )
+        }
+        async fn slots() -> String {
+            r#"[
+                {"id":0,"is_processing":true,"id_task":5,"n_prompt_tokens_processed":20,"next_token":[{"n_decoded":30}]},
+                {"id":1,"is_processing":false,"id_task":4,"n_prompt_tokens_processed":888,"next_token":[{"n_decoded":999}]}
+            ]"#
+                .to_string()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route("/metrics", get(metrics))
+            .route("/slots", get(slots));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let adapter =
+            LlamaCppAdapter::new(reqwest::Client::new(), format!("http://{addr}"), None, None);
+        let m = adapter.get_metrics().await.expect("metrics");
+        assert_eq!(m.total_generation_tokens, Some(130));
+        assert_eq!(m.total_prompt_tokens, Some(70));
     }
 
     /// Live generation rate from per-slot progress: 0 when idle, the sum of
@@ -846,6 +957,7 @@ mod tests {
                 id,
                 is_processing: true,
                 id_task: task,
+                n_prompt_tokens_processed: 0,
                 next_token: vec![NextToken { n_decoded: decoded }],
             }
         }

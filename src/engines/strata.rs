@@ -135,13 +135,18 @@ struct StrataTotals {
 }
 
 /// The in-flight job (or the last one, while idle).
+///
+/// Every per-job field is `null` while the engine is idle — the key is present
+/// with a null value, which `#[serde(default)]` does not absorb (defaults cover
+/// absent keys only). So each one is an `Option`: getting this wrong drops the
+/// whole reply and Strata shows up as a Running engine with no metrics at all.
 #[derive(Deserialize)]
 struct StrataLive {
     state: String,
     #[serde(default)]
     queued: u64,
     #[serde(default)]
-    generated: i64,
+    generated: Option<i64>,
     #[serde(default)]
     prompt_read: Option<i64>,
     #[serde(default)]
@@ -162,7 +167,11 @@ fn map_metrics(reply: StrataMetricsReply) -> EngineMetrics {
 
     // In-flight progress on top of the completion-settled totals; ignored
     // while idle, where `live` repeats the last job already counted.
-    let inflight_generated = if busy { l.generated.max(0) } else { 0 };
+    let inflight_generated = if busy {
+        l.generated.unwrap_or(0).max(0)
+    } else {
+        0
+    };
     let inflight_prompt = if busy {
         l.prompt_read.unwrap_or(0).max(0)
     } else {
@@ -447,6 +456,39 @@ mod tests {
         assert_eq!(m.total_generation_tokens, Some(50));
         assert_eq!(m.total_prompt_tokens, Some(100));
         assert_eq!(m.active_requests, Some(0));
+    }
+
+    /// The shape a running Strata actually answers with while idle: every
+    /// per-job key is **present with a null value**, which `#[serde(default)]`
+    /// does not absorb — a non-`Option` field here drops the whole reply, and
+    /// the engine then shows up as Running with no metrics whatsoever. This is
+    /// the regression the trimmed fixtures used to hide.
+    #[test]
+    fn idle_reply_reports_null_per_job_fields() {
+        let m = map_metrics(reply(
+            r#"{"totals": {"since": 1791572955.54, "requests": 33, "prompt_tokens": 3573686,
+                           "reused": 3049823, "output_tokens": 14915, "prompt_ms": 109100.5,
+                           "decode_ms": 73921.4, "drafts_offered": 12352, "drafts_accepted": 8876},
+                 "live": {"state": "idle", "queued": 0, "phase": null,
+                          "prompt_tokens": null, "prompt_read": null, "prompt_total": null,
+                          "generated": null, "max_tokens": null, "elapsed_s": null,
+                          "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null,
+                          "tok_s_window_s": null, "parallel": 4, "running": 0},
+                 "requests": [{"projection": null, "time": 1791575812.66, "duration_s": 1.8,
+                               "finish": "stop", "prompt_tokens": 82493, "reused": 80985,
+                               "output_tokens": 302, "prompt_ms": 599.3, "decode_ms": 1181.5,
+                               "decode_tok_s": 255.6, "hit_rate": null, "pcie_share": null}]}"#,
+        ));
+
+        assert_eq!(m.total_requests, Some(33));
+        // Nothing in flight, so the totals pass through untouched.
+        assert_eq!(m.total_generation_tokens, Some(14915));
+        assert_eq!(m.total_prompt_tokens, Some(3573686));
+        assert_eq!(m.active_requests, Some(0));
+        assert_eq!(m.queued_requests, Some(0));
+        assert_eq!(m.tokens_per_sec, None);
+        assert_eq!(m.avg_tokens_per_sec, None);
+        assert!(!m.warming_up);
     }
 
     #[test]

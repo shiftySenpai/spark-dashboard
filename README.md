@@ -80,7 +80,8 @@ for details on what each script does.
   (e.g. DGX Spark GB10, GH200)
 - Disk and network I/O throughput
 
-**LLM Engine Monitoring** (vLLM via Prometheus metrics)
+**LLM Engine Monitoring** (vLLM, llama.cpp, Strata and Infernix — each from its
+own metrics surface: Prometheus for vLLM/llama.cpp/Infernix, JSON for Strata)
 - Tokens per second (generation + prompt)
 - Time to first token, inter-token latency, end-to-end latency, queue time
 - Active/queued requests, batch size
@@ -90,7 +91,7 @@ for details on what each script does.
 
 **Multi-Engine Support**
 - Run and monitor any number of inference engines side by side — each
-  vLLM process or container is detected automatically
+  engine process or container is detected automatically
 - Every engine panel follows the page's engine selection by default, so one
   layout works whether the host runs one engine or four
 - Pin a panel to a specific engine to watch two of them at once; a pinned
@@ -287,7 +288,7 @@ spark-dashboard service status
       --state-dir <DIR>       Directory for saved state [default: /var/lib/spark-dashboard] [env: SPARK_DASHBOARD_STATE_DIR]
       --gpu-index <IDX>       Optional NVML GPU index to monitor [env: SPARK_DASHBOARD_GPU_INDEX]
       --simulate-gpus <N>     Append N fictive GPUs with simulated data (dev aid) [env: SPARK_DASHBOARD_SIMULATE_GPUS]
-      --engine <TYPE>         Manual engine type (e.g. vllm) [env: SPARK_DASHBOARD_ENGINE]
+      --engine <TYPE>         Manual engine type: vllm, llama.cpp, strata or infernix [env: SPARK_DASHBOARD_ENGINE]
       --engine-url <URL>      Manual engine endpoint (requires --engine) [env: SPARK_DASHBOARD_ENGINE_URL]
       --engine-api-key <KEY>  API key for an endpoint, paired by index with --engine-url [env: SPARK_DASHBOARD_ENGINE_API_KEY]
       --provider-api-key <KEY> Fallback API key for any endpoint [env: SPARK_DASHBOARD_PROVIDER_API_KEY]
@@ -633,6 +634,11 @@ real NVML/procfs parsing on Linux, with compile-time stubs on other platforms.
 │       ├── mod.rs              Engine trait, state machine, collector
 │       ├── detector.rs         Process scan + Docker discovery
 │       ├── vllm.rs             vLLM adapter (Prometheus parsing)
+│       ├── llama_cpp.rs        llama.cpp adapter (/metrics + /slots)
+│       ├── strata.rs           Strata adapter (JSON /metrics)
+│       ├── infernix.rs         Infernix adapter (Prometheus parsing)
+│       ├── request_log.rs      Per-request rows scraped from engine logs
+│       ├── warmup.rs           First-request outlier exclusion
 │       └── prometheus.rs       Prometheus text-format parser
 ├── frontend/
 │   └── src/

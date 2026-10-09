@@ -1,5 +1,6 @@
 pub mod detector;
 pub mod histogram;
+pub mod infernix;
 pub mod llama_cpp;
 pub mod prometheus;
 pub mod request_log;
@@ -22,6 +23,7 @@ pub enum EngineType {
     Vllm,
     LlamaCpp,
     Strata,
+    Infernix,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
@@ -36,6 +38,7 @@ impl std::fmt::Display for EngineType {
             EngineType::Vllm => write!(f, "vLLM"),
             EngineType::LlamaCpp => write!(f, "llama.cpp"),
             EngineType::Strata => write!(f, "Strata"),
+            EngineType::Infernix => write!(f, "Infernix"),
         }
     }
 }
@@ -567,6 +570,9 @@ pub fn create_adapter(
             client, endpoint, model_hint, api_key,
         )),
         EngineType::Strata => Box::new(strata::StrataAdapter::new(client, endpoint, model_hint)),
+        EngineType::Infernix => Box::new(infernix::InfernixAdapter::new(
+            client, endpoint, model_hint, api_key,
+        )),
     }
 }
 

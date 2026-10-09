@@ -39,6 +39,14 @@ const ENGINE_BINARIES: &[(&str, EngineType, &str)] = &[
         "http://localhost:8080",
     ),
     ("strata", EngineType::Strata, "http://localhost:8095"),
+    // Infernix defaults to 8080 — the same port llama-server defaults to, so two
+    // engines on defaults cannot coexist; whichever binds second fails. The
+    // binary name decides the type, so a shared default port is not ambiguous.
+    (
+        "infernix-serve",
+        EngineType::Infernix,
+        "http://localhost:8080",
+    ),
 ];
 
 /// The port vLLM serves on when it is not told otherwise. Used wherever a
@@ -148,6 +156,10 @@ fn cmdline_matches_engine(arg: &str, engine_type: &EngineType) -> bool {
         // The native engine binary (`.../engine/strata`) and the front's
         // `--engine strata` flag both identify Strata.
         EngineType::Strata => arg == "strata" || arg.ends_with("/strata"),
+        // Infernix is one native binary; it is not a llama.cpp or GGUF engine
+        // (it descends from NInfer and reads `.infernix`/`.ninfer` artifacts),
+        // so only its own name identifies it.
+        EngineType::Infernix => arg == "infernix-serve" || arg.ends_with("/infernix-serve"),
     }
 }
 
@@ -241,6 +253,9 @@ fn detect_by_process(sys: &sysinfo::System) -> Vec<DetectedEngine> {
                 // Strata's model comes from a config JSON, not a command-line
                 // model flag; its `/v1/models` answers openly.
                 EngineType::Strata => None,
+                // Infernix takes the artifact path positionally, not a model id;
+                // `--model-id` only renames what `/v1/models` already reports.
+                EngineType::Infernix => None,
             };
             let pid = p.pid().as_u32();
             match seen_endpoints.get(&endpoint) {
@@ -696,21 +711,27 @@ fn container_engine_type(
     let named_vllm = names.iter().any(|n| n.to_lowercase().contains("vllm"));
     let named_llama = names.iter().any(|n| n.to_lowercase().contains("llama"));
     let named_strata = names.iter().any(|n| n.to_lowercase().contains("strata"));
+    let named_infernix = names.iter().any(|n| n.to_lowercase().contains("infernix"));
     let is_vllm = image.contains("vllm") || command.contains("vllm");
     let is_llama = image.contains("llama.cpp") || command.contains("llama-server");
     let is_strata = image.contains("strata") || command.contains("strata");
+    let is_infernix = image.contains("infernix") || command.contains("infernix-serve");
     if is_vllm {
         Some((EngineType::Vllm, true))
     } else if is_llama {
         Some((EngineType::LlamaCpp, true))
     } else if is_strata {
         Some((EngineType::Strata, true))
+    } else if is_infernix {
+        Some((EngineType::Infernix, true))
     } else if named_vllm {
         Some((EngineType::Vllm, false))
     } else if named_llama {
         Some((EngineType::LlamaCpp, false))
     } else if named_strata {
         Some((EngineType::Strata, false))
+    } else if named_infernix {
+        Some((EngineType::Infernix, false))
     } else {
         None
     }
@@ -727,6 +748,9 @@ fn is_engine_process(line: &str, engine_type: &EngineType) -> bool {
         EngineType::Strata => line.split_whitespace().any(|arg| {
             arg == "strata" || arg.ends_with("/strata") || arg.ends_with("serve/server.py")
         }),
+        EngineType::Infernix => line
+            .split_whitespace()
+            .any(|arg| arg == "infernix-serve" || arg.ends_with("/infernix-serve")),
     }
 }
 
@@ -737,6 +761,7 @@ fn parse_model_from_command_str_engine(cmd: &str, engine_type: &EngineType) -> O
     match engine_type {
         EngineType::Vllm => parse_model_from_command_str(cmd),
         EngineType::Strata => None,
+        EngineType::Infernix => None,
         EngineType::LlamaCpp => {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             for (i, p) in parts.iter().enumerate() {
@@ -850,7 +875,7 @@ async fn probe_engine(client: &reqwest::Client, candidate: &DetectedEngine) -> b
 
     match candidate.engine_type {
         // All engines expose the same liveness endpoint.
-        EngineType::Vllm | EngineType::LlamaCpp | EngineType::Strata => {
+        EngineType::Vllm | EngineType::LlamaCpp | EngineType::Strata | EngineType::Infernix => {
             // GET /health -- 200 = healthy
             client
                 .get(format!("{}/health", candidate.endpoint))
@@ -1250,6 +1275,86 @@ mod tests {
             &EngineType::Strata
         ));
         assert!(!cmdline_matches_engine("vllm", &EngineType::LlamaCpp));
+    }
+
+    #[test]
+    fn cmdline_matches_infernix_by_its_binary_alone() {
+        // Infernix descends from NInfer, not llama.cpp, and reads `.infernix`
+        // / `.ninfer` artifacts rather than GGUF — so nothing about a llama.cpp
+        // or Strata process may claim it, and vice versa.
+        assert!(cmdline_matches_engine(
+            "infernix-serve",
+            &EngineType::Infernix
+        ));
+        assert!(cmdline_matches_engine(
+            "/home/x/Infernix/build/apps/infernix-serve",
+            &EngineType::Infernix
+        ));
+        assert!(!cmdline_matches_engine(
+            "infernix-serve",
+            &EngineType::LlamaCpp
+        ));
+        assert!(!cmdline_matches_engine(
+            "infernix-serve",
+            &EngineType::Strata
+        ));
+        assert!(!cmdline_matches_engine(
+            "llama-server",
+            &EngineType::Infernix
+        ));
+    }
+
+    /// Infernix takes the artifact path positionally and its port with the same
+    /// `--port` flag the shared argument parser already understands.
+    #[test]
+    fn infernix_cmdline_yields_its_port() {
+        let args = to_args(&[
+            "/home/x/Infernix/build/apps/infernix-serve",
+            "/models/qwen38.infernix",
+            "--port",
+            "8123",
+            "--max-context",
+            "262144",
+        ]);
+        assert_eq!(
+            parse_endpoint_from_args(&args, "http://localhost:8080").as_deref(),
+            Some("http://localhost:8123")
+        );
+        // No `--port` at all means Infernix's own default, not the fallback's.
+        let no_port = to_args(&["/home/x/infernix-serve", "/models/qwen38.infernix"]);
+        assert_eq!(
+            parse_endpoint_from_args(&no_port, "http://localhost:8080").as_deref(),
+            Some("http://localhost:8080")
+        );
+    }
+
+    #[test]
+    fn container_engine_type_recognizes_infernix() {
+        let named = |n: &str| vec![n.to_string()];
+        assert_eq!(
+            container_engine_type("infernix/serve:latest", "", &[]),
+            Some((EngineType::Infernix, true))
+        );
+        assert_eq!(
+            container_engine_type("img", "/usr/local/bin/infernix-serve qwen.infernix", &[]),
+            Some((EngineType::Infernix, true))
+        );
+        assert_eq!(
+            container_engine_type("img", "sleep infinity", &named("infernix-box")),
+            Some((EngineType::Infernix, false))
+        );
+    }
+
+    #[test]
+    fn docker_top_rows_match_infernix() {
+        assert!(is_engine_process(
+            "1030072 /usr/local/bin/infernix-serve /models/qwen38.infernix --port 8123",
+            &EngineType::Infernix
+        ));
+        assert!(!is_engine_process(
+            "1 root sleep infinity",
+            &EngineType::Infernix
+        ));
     }
 
     #[test]

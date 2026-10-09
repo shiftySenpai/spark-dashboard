@@ -153,7 +153,8 @@ struct RunArgs {
     #[arg(long, env = "SPARK_DASHBOARD_SIMULATE_GPUS", default_value_t = 0)]
     simulate_gpus: u32,
 
-    /// Manually specify engine type (use with --engine-url)
+    /// Manually specify engine type (use with --engine-url): one of vllm,
+    /// llama.cpp, strata, infernix
     #[arg(
         long,
         value_name = "TYPE",
@@ -240,8 +241,7 @@ async fn run_server_inner(args: RunArgs) -> Result<(), Box<dyn std::error::Error
         )
         .init();
 
-    // Parse manual engine overrides: --engine ollama --engine-url http://localhost:11434
-    // Both vectors must have the same length. Each pair creates an EngineOverride.
+    // Parse manual engine overrides: --engine ollama --engine-url http://localhost:11434    // Both vectors must have the same length. Each pair creates an EngineOverride.
     let api_keys = ApiKeyResolver::from_pairs(
         &args.engine_url,
         &args.engine_api_key,
@@ -253,11 +253,10 @@ async fn run_server_inner(args: RunArgs) -> Result<(), Box<dyn std::error::Error
         .iter()
         .zip(args.engine_url.iter())
         .filter_map(|(engine_str, url)| {
-            let engine_type = match engine_str.to_lowercase().as_str() {
-                "vllm" => EngineType::Vllm,
-                "strata" => EngineType::Strata,
-                unknown => {
-                    tracing::warn!("Unknown engine type '{}', ignoring override", unknown);
+            let engine_type = match parse_engine_type(engine_str) {
+                Some(t) => t,
+                None => {
+                    tracing::warn!("Unknown engine type '{}', ignoring override", engine_str);
                     return None;
                 }
             };
@@ -394,9 +393,24 @@ async fn run_server_inner(args: RunArgs) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// Map a `--engine` value to an engine type. Case-insensitive, and tolerant of
+/// the ways llama.cpp gets written on a command line, because an override this
+/// parser drops leaves the operator staring at an engine the dashboard claims
+/// it cannot see.
+fn parse_engine_type(value: &str) -> Option<EngineType> {
+    match value.trim().to_lowercase().as_str() {
+        "vllm" => Some(EngineType::Vllm),
+        "llama.cpp" | "llama-cpp" | "llamacpp" | "llama" => Some(EngineType::LlamaCpp),
+        "strata" => Some(EngineType::Strata),
+        "infernix" => Some(EngineType::Infernix),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::sync::Mutex;
 
     /// Clap reads the environment on every parse, so any test in this module
@@ -430,6 +444,18 @@ mod tests {
         if let Err(panic) = result {
             std::panic::resume_unwind(panic);
         }
+    }
+
+    /// Every engine type has to be nameable from `--engine`, or a manual
+    /// override is the one thing that cannot reach it.
+    #[test]
+    fn engine_override_names_cover_every_engine_type() {
+        assert_eq!(parse_engine_type("vllm"), Some(EngineType::Vllm));
+        assert_eq!(parse_engine_type("Strata"), Some(EngineType::Strata));
+        assert_eq!(parse_engine_type("INFERnix"), Some(EngineType::Infernix));
+        assert_eq!(parse_engine_type("llama.cpp"), Some(EngineType::LlamaCpp));
+        assert_eq!(parse_engine_type("llamacpp"), Some(EngineType::LlamaCpp));
+        assert_eq!(parse_engine_type(" ollama "), None);
     }
 
     #[test]

@@ -78,7 +78,10 @@ pub fn ensure(
     log_file: Option<&str>,
 ) {
     // Strata reports requests natively; a log tail would only duplicate them.
-    if matches!(engine_type, EngineType::Strata) {
+    // Infernix has the opposite problem: its per-request trace is an opt-in
+    // JSONL file (`--request-log-jsonl`) in a shape these line parsers do not
+    // read, so a tail would stream lines it can never turn into rows.
+    if matches!(engine_type, EngineType::Strata | EngineType::Infernix) {
         return;
     }
     let source_key = match (container_id, log_file) {
@@ -242,6 +245,7 @@ impl RequestLog {
             EngineType::LlamaCpp => self.parse_llama_line(line, now_ms),
             EngineType::Vllm => parse_vllm_line(line, now_ms),
             EngineType::Strata => None,
+            EngineType::Infernix => None,
         }
     }
 

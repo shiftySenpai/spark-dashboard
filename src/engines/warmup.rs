@@ -14,11 +14,12 @@
 use super::prometheus::ParsedMetrics;
 use std::collections::HashMap;
 
-/// Counter name used to gauge "how many requests has this engine handled" —
-/// shared with `VllmAdapter::get_metrics`. Every vLLM request emits exactly one
-/// observation into this histogram, so its `_count` doubles as a request
-/// counter without needing a separate gauge.
-const TRIGGER_COUNT_KEY: &str = "vllm_time_to_first_token_seconds_count";
+/// Default counter name used to gauge "how many requests has this engine
+/// handled" — shared with `VllmAdapter::get_metrics`. Every vLLM request emits
+/// exactly one observation into this histogram, so its `_count` doubles as a
+/// request counter without needing a separate gauge. Adapters for other engines
+/// pass their own equivalent name to [`WarmupTracker::new`].
+pub const VLLM_TRIGGER_COUNT_KEY: &str = "vllm_time_to_first_token_seconds_count";
 
 /// Cumulative-metric snapshot taken at the moment warmup completes. All
 /// subsequent polls compute `current - baseline` for every counter and
@@ -42,12 +43,18 @@ enum WarmupState {
 /// Per-engine warmup tracker. One instance lives inside each engine adapter,
 /// guarded by a `Mutex` for the async polling loop.
 ///
-/// The tracker is engine-agnostic — it only depends on `ParsedMetrics` and a
-/// well-known counter key (`vllm_time_to_first_token_seconds_count`). Future
-/// adapters that emit a different trigger key can be supported by parameterizing
-/// the constructor.
+/// The tracker is engine-agnostic — it only depends on `ParsedMetrics` and the
+/// name of the counter that counts handled requests, passed to `new`. vLLM and
+/// Infernix each emit one observation per request into a latency histogram, so
+/// each passes that histogram's `_count`; llama.cpp and Strata have no such
+/// histogram and do not use the tracker at all.
 pub struct WarmupTracker {
     skip_requests: u64,
+    /// The counter that counts handled requests for this engine, e.g.
+    /// `infernix_time_to_first_token_seconds_count`. Every engine whose
+    /// warmup is measured by request count emits exactly one observation per
+    /// request into a latency histogram, so its `_count` is the cursor.
+    trigger_key: String,
     state: WarmupState,
 }
 
@@ -79,9 +86,10 @@ impl WarmupTracker {
     /// **`skip_requests = 0`:** baselines on the first poll. Useful as an
     /// override but does not skip any warmup observations — only filters out
     /// pre-attach cumulative pollution for already-running engines.
-    pub fn new(skip_requests: u64) -> Self {
+    pub fn new(skip_requests: u64, trigger_key: &str) -> Self {
         Self {
             skip_requests,
+            trigger_key: trigger_key.to_string(),
             state: WarmupState::Warming {
                 initial_total: None,
             },
@@ -94,7 +102,7 @@ impl WarmupTracker {
     pub fn observe(&mut self, parsed: &ParsedMetrics) -> WarmupOutput {
         let current_total = parsed
             .counters
-            .get(TRIGGER_COUNT_KEY)
+            .get(&self.trigger_key)
             .map(|v| *v as u64)
             .unwrap_or(0);
 
@@ -286,8 +294,8 @@ mod tests {
 
     #[test]
     fn first_poll_captures_initial_total_and_warms_up() {
-        let mut t = WarmupTracker::new(1);
-        let m = metrics(&[(TRIGGER_COUNT_KEY, 0.0)], &[], &[]);
+        let mut t = WarmupTracker::new(1, VLLM_TRIGGER_COUNT_KEY);
+        let m = metrics(&[(VLLM_TRIGGER_COUNT_KEY, 0.0)], &[], &[]);
         let out = t.observe(&m);
         assert!(out.warming_up);
         assert!(!out.just_transitioned);
@@ -301,13 +309,13 @@ mod tests {
 
     #[test]
     fn transitions_to_active_when_skip_threshold_reached() {
-        let mut t = WarmupTracker::new(1);
+        let mut t = WarmupTracker::new(1, VLLM_TRIGGER_COUNT_KEY);
         // First poll: cursor at 0, still warming.
-        let _ = t.observe(&metrics(&[(TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
+        let _ = t.observe(&metrics(&[(VLLM_TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
         // Second poll: 1 request arrived → transition.
         let m2 = metrics(
             &[
-                (TRIGGER_COUNT_KEY, 1.0),
+                (VLLM_TRIGGER_COUNT_KEY, 1.0),
                 ("vllm_time_to_first_token_seconds_sum", 2.5),
                 ("vllm_generation_tokens_total", 100.0),
             ],
@@ -339,13 +347,13 @@ mod tests {
 
     #[test]
     fn post_baseline_yields_correct_deltas() {
-        let mut t = WarmupTracker::new(1);
+        let mut t = WarmupTracker::new(1, VLLM_TRIGGER_COUNT_KEY);
         // Warmup
-        let _ = t.observe(&metrics(&[(TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
+        let _ = t.observe(&metrics(&[(VLLM_TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
         // Baseline at count=1, slow observation in tail
         let _ = t.observe(&metrics(
             &[
-                (TRIGGER_COUNT_KEY, 1.0),
+                (VLLM_TRIGGER_COUNT_KEY, 1.0),
                 ("vllm_time_to_first_token_seconds_sum", 4.0),
                 ("vllm_generation_tokens_total", 50.0),
             ],
@@ -358,7 +366,7 @@ mod tests {
         // Steady state: 100 fast observations land in the [0, 0.05] bucket.
         let m = metrics(
             &[
-                (TRIGGER_COUNT_KEY, 101.0),
+                (VLLM_TRIGGER_COUNT_KEY, 101.0),
                 ("vllm_time_to_first_token_seconds_sum", 5.0), // +1.0 across 100 obs
                 ("vllm_generation_tokens_total", 10050.0),
             ],
@@ -410,10 +418,10 @@ mod tests {
 
     #[test]
     fn warming_regression_resets_initial_cursor() {
-        let mut t = WarmupTracker::new(3);
-        let _ = t.observe(&metrics(&[(TRIGGER_COUNT_KEY, 10.0)], &[], &[]));
+        let mut t = WarmupTracker::new(3, VLLM_TRIGGER_COUNT_KEY);
+        let _ = t.observe(&metrics(&[(VLLM_TRIGGER_COUNT_KEY, 10.0)], &[], &[]));
         // Restart while still warming: count drops below initial.
-        let _ = t.observe(&metrics(&[(TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
+        let _ = t.observe(&metrics(&[(VLLM_TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
         match &t.state {
             WarmupState::Warming { initial_total } => assert_eq!(*initial_total, Some(0)),
             _ => panic!("should still be warming after regression"),
@@ -422,11 +430,11 @@ mod tests {
 
     #[test]
     fn active_regression_resets_to_warming() {
-        let mut t = WarmupTracker::new(0);
+        let mut t = WarmupTracker::new(0, VLLM_TRIGGER_COUNT_KEY);
         // Skip=0 → first poll baselines immediately.
         let _ = t.observe(&metrics(
             &[
-                (TRIGGER_COUNT_KEY, 5.0),
+                (VLLM_TRIGGER_COUNT_KEY, 5.0),
                 ("vllm_generation_tokens_total", 500.0),
             ],
             &[],
@@ -436,7 +444,7 @@ mod tests {
         // Restart: counters drop.
         let out = t.observe(&metrics(
             &[
-                (TRIGGER_COUNT_KEY, 1.0),
+                (VLLM_TRIGGER_COUNT_KEY, 1.0),
                 ("vllm_generation_tokens_total", 10.0),
             ],
             &[],
@@ -451,10 +459,10 @@ mod tests {
 
     #[test]
     fn schema_drift_drops_only_affected_histogram() {
-        let mut t = WarmupTracker::new(1);
-        let _ = t.observe(&metrics(&[(TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
+        let mut t = WarmupTracker::new(1, VLLM_TRIGGER_COUNT_KEY);
+        let _ = t.observe(&metrics(&[(VLLM_TRIGGER_COUNT_KEY, 0.0)], &[], &[]));
         let _ = t.observe(&metrics(
-            &[(TRIGGER_COUNT_KEY, 1.0)],
+            &[(VLLM_TRIGGER_COUNT_KEY, 1.0)],
             &[
                 ("histA", &[(0.1, 0.0), (1.0, 1.0), (f64::INFINITY, 1.0)]),
                 ("histB", &[(0.5, 1.0), (f64::INFINITY, 1.0)]),
@@ -463,7 +471,7 @@ mod tests {
         ));
         // Now histA gets a new bucket — schema drift.
         let out = t.observe(&metrics(
-            &[(TRIGGER_COUNT_KEY, 2.0)],
+            &[(VLLM_TRIGGER_COUNT_KEY, 2.0)],
             &[
                 (
                     "histA",
@@ -480,10 +488,10 @@ mod tests {
 
     #[test]
     fn skip_zero_baselines_on_first_poll() {
-        let mut t = WarmupTracker::new(0);
+        let mut t = WarmupTracker::new(0, VLLM_TRIGGER_COUNT_KEY);
         let m = metrics(
             &[
-                (TRIGGER_COUNT_KEY, 5.0),
+                (VLLM_TRIGGER_COUNT_KEY, 5.0),
                 ("vllm_generation_tokens_total", 500.0),
             ],
             &[],

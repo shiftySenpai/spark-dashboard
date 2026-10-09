@@ -17,8 +17,9 @@ use tokio::sync::Mutex;
 const DEFAULT_WARMUP_SKIP_REQUESTS: u64 = 1;
 
 /// Read the warmup-skip threshold from the environment. Falls back silently
-/// to the default on parse failure or when the variable is unset.
-fn warmup_skip_from_env() -> u64 {
+/// to the default on parse failure or when the variable is unset. Shared with
+/// the Infernix adapter, which counts warmup requests the same way.
+pub(crate) fn warmup_skip_from_env() -> u64 {
     std::env::var("SPARK_WARMUP_SKIP_REQUESTS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -123,7 +124,10 @@ impl VllmAdapter {
             prev_spec_decode: Mutex::new(None),
             avg_accum: Mutex::new((0.0, 0)),
             avg_prompt_accum: Mutex::new((0.0, 0)),
-            warmup: Mutex::new(WarmupTracker::new(warmup_skip_from_env())),
+            warmup: Mutex::new(WarmupTracker::new(
+                warmup_skip_from_env(),
+                super::warmup::VLLM_TRIGGER_COUNT_KEY,
+            )),
             hf_model_cache: Mutex::new(None),
             last_hf_error: Mutex::new(None),
         }
@@ -1080,8 +1084,9 @@ impl EngineAdapter for VllmAdapter {
 /// is non-negative, so the tile stays blank until at least one token has been
 /// drafted and never surfaces a negative rate from a malformed/reset counter.
 /// Used for both the lifetime TAR (absolute counters) and the live TAR
-/// (per-poll deltas).
-fn spec_acceptance_rate(accepted: Option<f64>, draft: Option<f64>) -> Option<f64> {
+/// (per-poll deltas). Shared with the Infernix adapter, which reports the same
+/// ratio from its own counters.
+pub(crate) fn spec_acceptance_rate(accepted: Option<f64>, draft: Option<f64>) -> Option<f64> {
     match (accepted, draft) {
         (Some(a), Some(d)) if d > 0.0 && a >= 0.0 => Some((a / d) * 100.0),
         _ => None,
@@ -1091,7 +1096,10 @@ fn spec_acceptance_rate(accepted: Option<f64>, draft: Option<f64>) -> Option<f64
 /// Mean acceptance length: accepted tokens per draft attempt (`accepted / drafts`).
 ///
 /// Returns `None` unless both counts are present and `drafts > 0`.
-fn spec_mean_acceptance_length(accepted: Option<f64>, drafts: Option<f64>) -> Option<f64> {
+pub(crate) fn spec_mean_acceptance_length(
+    accepted: Option<f64>,
+    drafts: Option<f64>,
+) -> Option<f64> {
     match (accepted, drafts) {
         (Some(a), Some(n)) if n > 0.0 => Some(a / n),
         _ => None,
@@ -1442,7 +1450,7 @@ vllm:time_to_first_token_seconds_sum 0.0
 vllm:time_to_first_token_seconds_count 0.0
 ";
 
-        let mut tracker = WarmupTracker::new(1);
+        let mut tracker = WarmupTracker::new(1, super::super::warmup::VLLM_TRIGGER_COUNT_KEY);
 
         let parsed_idle = parse_prometheus_text(body_idle).expect("parse idle");
         let out_idle = tracker.observe(&parsed_idle);

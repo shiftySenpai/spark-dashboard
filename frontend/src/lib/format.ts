@@ -179,6 +179,7 @@ export function engineDisplayName(engineType: EngineType): string {
     Vllm: 'vLLM',
     LlamaCpp: 'llama.cpp',
     Strata: 'Strata',
+    Infernix: 'Infernix',
   }
   return names[engineType]
 }
@@ -188,9 +189,12 @@ export function engineIconSrc(engineType: EngineType): string {
   const icons: Record<EngineType, string> = {
     Vllm: '/icons/vllm.svg',
     LlamaCpp: '/icons/llama-cpp.svg',
-    // Placeholder until the official Strata logo is sourced — the mark
-    // renders as stacked strata layers in the dashboard's green.
+    // Neither Strata nor Infernix ships a logo, so both are designed stand-ins:
+    // stacked strata layers in dashboard green, and a flame in fuchsia. Hue is
+    // the fastest cue at the 12px these chips render at, so the four marks must
+    // not repeat one — swap in an official mark the day either project ships it.
     Strata: '/icons/strata.svg',
+    Infernix: '/icons/infernix.svg',
   }
   return icons[engineType]
 }

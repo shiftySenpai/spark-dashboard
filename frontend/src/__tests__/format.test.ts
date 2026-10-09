@@ -12,6 +12,7 @@ import {
   shortGpuName,
   modelMetadataWarning,
 } from '../lib/format'
+import type { EngineType } from '../types/metrics'
 
 const GIB = 1_073_741_824
 const MIB = 1_048_576
@@ -155,6 +156,7 @@ describe('engineDisplayName', () => {
     expect(engineDisplayName('Vllm')).toBe('vLLM')
     expect(engineDisplayName('LlamaCpp')).toBe('llama.cpp')
     expect(engineDisplayName('Strata')).toBe('Strata')
+    expect(engineDisplayName('Infernix')).toBe('Infernix')
   })
 })
 
@@ -163,6 +165,26 @@ describe('engineIconSrc', () => {
     expect(engineIconSrc('Vllm')).toBe('/icons/vllm.svg')
     expect(engineIconSrc('LlamaCpp')).toBe('/icons/llama-cpp.svg')
     expect(engineIconSrc('Strata')).toBe('/icons/strata.svg')
+    expect(engineIconSrc('Infernix')).toBe('/icons/infernix.svg')
+  })
+
+  it('gives every engine a name and a mark of its own', () => {
+    // The whole point of the chip is telling engines apart at a glance — an
+    // icon or label two engines share makes the panel lie. This record is also
+    // the compile-time tripwire: a new EngineType has to be added here.
+    const all: Record<EngineType, true> = {
+      Vllm: true,
+      LlamaCpp: true,
+      Strata: true,
+      Infernix: true,
+    }
+    const types = Object.keys(all) as EngineType[]
+    const names = types.map(engineDisplayName)
+    const icons = types.map(engineIconSrc)
+    expect(new Set(names).size).toBe(types.length)
+    expect(new Set(icons).size).toBe(types.length)
+    expect(names.every((n) => n.trim().length > 0)).toBe(true)
+    expect(icons.every((i) => i.startsWith('/icons/') && i.endsWith('.svg'))).toBe(true)
   })
 })
 

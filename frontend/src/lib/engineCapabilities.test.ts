@@ -24,6 +24,15 @@ describe('supportsCapability', () => {
     expect(supportsCapability('Strata', 'latencyPercentiles')).toBe(false)
   })
 
+  it('Infernix gates no group — histograms and a measured KV cache are both there', () => {
+    // TTFT / duration / queue histograms give percentiles and goodput; the KV
+    // page pair gives a real usage percentage. Its one gap (no inter-token or
+    // per-output-token histogram) is not a gated group.
+    for (const cap of ['kvCache', 'goodput', 'queueTime', 'latencyPercentiles'] as const) {
+      expect(supportsCapability('Infernix', cap)).toBe(true)
+    }
+  })
+
   it('null (aggregate / unknown type) assumes full support', () => {
     // An all-models view is the union of its members, and a type this build
     // does not know must never blank a panel it might fill.

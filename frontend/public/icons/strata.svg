@@ -1,6 +1,7 @@
-<!-- PLACEHOLDER — replace this file with the official Strata logo.
-     The dashboard references it at /icons/strata.svg; nothing else needs to
-     change when the real mark is sourced. Drawn for the white logo tile. -->
+<!-- Strata engine mark. Strata ships no logo, so this is a designed stand-in,
+     not an official mark — same status as infernix.svg beside it. Stacked
+     strata layers, in the dashboard's green; swap in an official mark the day
+     the project ships one. Drawn for the white logo tile. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <g fill="#76B900">
     <path d="M16 3 31 10.5 16 18 1 10.5Z"/>

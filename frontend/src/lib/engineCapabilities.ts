@@ -29,6 +29,12 @@ const UNSUPPORTED: Record<EngineType, ReadonlySet<EngineCapability>> = {
   // measurement (it exposes the queue depth, not the wait) — same hidden
   // groups as llama.cpp for now; histograms are on Strata's roadmap.
   Strata: new Set<EngineCapability>(['kvCache', 'goodput', 'queueTime', 'latencyPercentiles']),
+  // Infernix gates nothing: it exposes TTFT / request-duration / queue
+  // histograms (so percentiles and goodput interpolate) and a real KV page
+  // used/capacity pair, so its cache percentage is measured, not estimated.
+  // It has no inter-token or per-output-token histogram, but that family is not
+  // a gated group — it renders as a dash, which is honest.
+  Infernix: new Set(),
 }
 
 /**

@@ -95,7 +95,7 @@ export interface NetworkMetrics {
 
 // --- LLM Engine Types (Phase 2) ---
 
-export type EngineType = 'Vllm' | 'LlamaCpp' | 'Strata'
+export type EngineType = 'Vllm' | 'LlamaCpp' | 'Strata' | 'Infernix'
 
 export type DeploymentMode = 'Docker' | 'Native'
 

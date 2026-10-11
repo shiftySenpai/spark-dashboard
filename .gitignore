@@ -36,6 +36,7 @@ update-spark.sh
 update-remote.sh
 LlamaCppEngine-spec.md
 StrataEngine-spec.md
+InfernixEngine-spec.md
 StrataDashboard-spec.md
 
 # Generated knowledge graph (local, not versioned)

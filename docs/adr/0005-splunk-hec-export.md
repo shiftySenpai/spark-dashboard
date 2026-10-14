@@ -1,4 +1,9 @@
-# ADR 0004: Splunk HEC metrics export
+# ADR 0005: Splunk HEC metrics export
+
+<!-- Renumbered from 0004 on 2026-10-14: upstream took 0004 for
+     "Engines declare what they report on the metrics contract". This ADR is
+     fork-only — upstream #133 recorded pushing metrics to an external sink as
+     out of scope and closed our PR #125 — so it keeps a fork-local number. -->
 
 - **Status:** Accepted
 - **Date:** 2026-08-17

@@ -633,7 +633,8 @@ pub async fn engine_collector_loop(
     // `cmd()`, which stays empty for every process. The cmdline fallback scan
     // below (and with it `python -m vllm...` and the Strata front) needs it,
     // so request it explicitly; the `read_proc_cmdline` path stays as the
-    // safety net for entries sysinfo still reports cmd-less.
+    // safety net for entries sysinfo still reports cmd-less. The detection
+    // tick has to ask for `cmd()` too — see the comment there.
     let mut sys =
         sysinfo::System::new_with_specifics(sysinfo::RefreshKind::nothing().with_processes(
             sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
@@ -664,8 +665,28 @@ pub async fn engine_collector_loop(
     loop {
         tokio::select! {
             _ = detection_interval.tick() => {
-                // Refresh process list for scanning
-                sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+                // Refresh process list for scanning. Deliberately
+                // `_specifics`: `System::refresh_processes` ignores the kind
+                // given to `new_with_specifics` and hardcodes one without
+                // `with_cmd`, so every process that started after the
+                // collector began would come back cmd-less and the cmdline
+                // scan could never match it — Strata's Python front
+                // (`serve/server.py --engine strata --port …`, process name
+                // `python`) and `python -m vllm…` would be invisible until a
+                // dashboard restart. Other fields match what
+                // `refresh_processes` would have requested so PID-tree
+                // expansion (and with it GPU attribution) is unchanged.
+                sys.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::All,
+                    true,
+                    sysinfo::ProcessRefreshKind::nothing()
+                        .with_memory()
+                        .with_cpu()
+                        .with_disk_usage()
+                        .with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
+                        .with_tasks()
+                        .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
+                );
 
                 let detected = detector::detect_engines(&sys, &client).await;
 
@@ -1073,6 +1094,39 @@ mod tests {
 
         assert_eq!(map[&seen_key].pids, vec![100], "detected engine keeps PIDs");
         assert!(map[&stale_key].pids.is_empty(), "undetected engine cleared");
+    }
+
+    /// The detection tick has to ask for `cmd()` by name. `System::refresh_processes`
+    /// ignores the kind handed to `new_with_specifics` and uses a hardcoded one
+    /// without `with_cmd`, so a process that started after the collector built its
+    /// `System` came back cmd-less forever — and the cmdline fallback scan, which
+    /// is how Strata's Python front and `python -m vllm…` are found, matches on
+    /// `cmd()`. This is the behaviour the tick relies on, pinned here.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn specifics_refresh_populates_cmd_for_a_process_seen_for_the_first_time() {
+        // A System built the way the collector builds one, refreshed after the
+        // process to look at already exists — the collector's own PID stands in
+        // for an engine started after the dashboard.
+        let mut sys = sysinfo::System::new_with_specifics(sysinfo::RefreshKind::nothing());
+        let pid = sysinfo::Pid::from_u32(std::process::id());
+
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+        );
+
+        let cmd = sys
+            .process(pid)
+            .expect("this test's own process")
+            .cmd()
+            .to_vec();
+        assert!(
+            !cmd.is_empty(),
+            "a `_specifics` refresh that asks for with_cmd must fill cmd() for a process \
+             that was not in the System when it was built"
+        );
     }
 
     #[test]

@@ -38,9 +38,10 @@ use super::vllm::{spec_acceptance_rate, spec_mean_acceptance_length, warmup_skip
 use super::warmup::WarmupTracker;
 use super::{
     EngineAdapter, EngineMetrics, EngineStatus, EngineType, HistogramBucket, LatencyPercentiles,
-    ModelInfo, ModelMetadataError, ModelResolution, E2E_SLO_MS, TTFT_SLO_MS,
+    MetricGroup, ModelInfo, ModelMetadataError, ModelResolution, E2E_SLO_MS, TTFT_SLO_MS,
 };
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -341,6 +342,12 @@ fn map_metrics(parsed: &ParsedMetrics, raw: &ParsedMetrics, blank: bool) -> Engi
 impl EngineAdapter for InfernixAdapter {
     fn engine_type(&self) -> EngineType {
         EngineType::Infernix
+    }
+
+    /// See the note on `LlamaCppAdapter::metric_groups`. Infernix gates nothing
+    /// in the capability table either, so all-on is also what it truly reports.
+    fn metric_groups(&self) -> BTreeSet<MetricGroup> {
+        MetricGroup::all()
     }
 
     fn endpoint(&self) -> &str {

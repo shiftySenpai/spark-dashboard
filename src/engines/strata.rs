@@ -19,11 +19,12 @@
 //!   job at a time and reports the backlog in `live.queued`.
 
 use super::{
-    EngineAdapter, EngineMetrics, EngineStatus, EngineType, ModelInfo, ModelMetadataError,
-    ModelResolution, RecentRequest,
+    EngineAdapter, EngineMetrics, EngineStatus, EngineType, MetricGroup, ModelInfo,
+    ModelMetadataError, ModelResolution, RecentRequest,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -248,6 +249,12 @@ fn map_metrics(reply: StrataMetricsReply) -> EngineMetrics {
 impl EngineAdapter for StrataAdapter {
     fn engine_type(&self) -> EngineType {
         EngineType::Strata
+    }
+
+    /// See the note on `LlamaCppAdapter::metric_groups` — same fork-wide choice:
+    /// the frontend's capability table still decides what a Strata panel hides.
+    fn metric_groups(&self) -> BTreeSet<MetricGroup> {
+        MetricGroup::all()
     }
 
     fn endpoint(&self) -> &str {

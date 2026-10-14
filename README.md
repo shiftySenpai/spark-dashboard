@@ -119,9 +119,16 @@ page is whatever set of panels you choose to put on it.
 - **Named pages, each with its own URL** — a training view and an idle health
   view kept side by side rather than one compromise. Point a wall display at a
   page's URL and it returns to that page after a reboot
+- **The Legacy layout** — start a new page from the pre-0.14 fixed dashboard's
+  arrangement instead of an empty one, then rearrange it like any other page.
+  See [Dashboard pages and kiosk URLs](#dashboard-pages-and-kiosk-urls)
 - **Per-page model selection** — a page can show one engine, every engine
   combined, or whatever the host happens to be serving. See
   [Configuring what a page shows](#configuring-what-a-page-shows)
+- **Engine rotation for wall displays** — a browser can step a page's engine
+  panels through all models and each running engine every 3–20 s, without
+  changing what anyone else sees. See
+  [Rotating between engines](#rotating-between-engines)
 - **Per-panel settings** — retitle it, choose its time window (5m / 10m / 15m),
   or pin it to a specific GPU or engine instead of following the page
 - **Fits the viewport** on desktop with no scrolling; stacks into one column on
@@ -389,6 +396,18 @@ created, renamed and deleted from the **Pages** menu in the header, and switched
 between from the tabs beside it; tabs that do not fit the header move into an
 overflow menu rather than pushing it out of shape.
 
+**New page** offers two starting points: an empty page to fill from the palette,
+or the **Legacy layout** — the fixed dashboard from before 0.14, in its reading
+order. The engine's identity runs across the top; under it are prefill and
+decode throughput, latency, SLO goodput, requests, and cache with speculative
+decoding beneath it; then the GPU row (utilization, temperature, power, clock);
+then the host row (CPU, CPU cores, memory, disk I/O, network). Every panel
+follows the page, and there is no log panel — the log viewer is off by default,
+so place one yourself if you turned it on. The page is called *Legacy*
+(*Legacy 2* if that name is taken) and from then on is a page like any other, to
+rearrange, rename or delete. Nothing else changes: existing pages stay as they
+are, and a fresh install still opens on the default preset.
+
 Each page has its own URL, built from a stable id plus a readable slug:
 
 ```
@@ -442,6 +461,28 @@ address one engine by endpoint. An engine that has gone away is still offered as
 a choice and marked as absent rather than hidden — hiding it is how a page
 silently ends up showing something else — and a pinned panel whose engine is
 gone keeps its slot and says the target is missing.
+
+### Rotating between engines
+
+A wall display nobody is standing at can cycle through the engines on its own.
+**Rotate**, beside *Page config* above the panels, offers *Off*, *3 s*, *5 s*,
+*10 s* and *20 s*. While it runs, every following engine panel on the page steps
+through **all models**, then each running engine in turn, then all models again.
+The control reads *Rotating*, with a bar counting down to the next step, and each
+panel names the engine (or *All models*) it is showing.
+
+- **Per browser, not per instance.** The setting lives in this browser's storage:
+  set it once on a kiosk and it survives reloads and reboots, on every page that
+  browser opens. It is never written to the dashboard configuration, so nobody
+  else's screen starts moving.
+- **Off by default**, and only offered while two or more engines are running.
+  Engines that start or stop are picked up on the next step.
+- **Only following engine panels move.** Pinned panels, GPU panels and host
+  panels stay where they are. Rotation overrides the page's model selection
+  while it runs, starting from whatever the page shows; turning it off returns
+  the page to it.
+- **It pauses while you edit a layout** and starts a fresh countdown after
+  *Save layout* or *Discard*.
 
 ### Log viewer (`--enable-log-viewer`, Linux only, opt-in)
 
@@ -652,7 +693,7 @@ real NVML/procfs parsing on Linux, with compile-time stubs on other platforms.
 │       │   └── gauges/         ArcGauge, HBar
 │       ├── types/              TypeScript type definitions
 │       └── lib/
-│           ├── dashboard/      Schema, migrations, preset, grid, routes
+│           ├── dashboard/      Schema, migrations, preset, starting layouts, grid, routes
 │           └── …               Circular buffer, formatting, theme
 ├── deploy/                     Deployment & install artifacts, by type
 │   ├── docker/                 Container install

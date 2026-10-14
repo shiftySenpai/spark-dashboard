@@ -3,7 +3,7 @@ import { render, waitFor } from '@testing-library/react'
 import { GridPage } from '@/components/grid/GridPage'
 import { MetricsStoreProvider } from '@/hooks/MetricsStoreProvider'
 import { FOLLOW } from '@/lib/dashboard/bindings'
-import type { PanelGeometry } from '@/lib/dashboard/grid'
+import { GRID_MAX_ROWS, type PanelGeometry } from '@/lib/dashboard/grid'
 import { defaultDashboardDocument } from '@/lib/dashboard/preset'
 import { DEFAULT_TIME_WINDOW, type DashboardPage } from '@/lib/dashboard/schema'
 import type { PanelType } from '@/lib/dashboard/panels'
@@ -37,7 +37,9 @@ function Harness({ width, height, content }: { width: number; height: number; co
   return (
     <MetricsStoreProvider>
       <div style={{ width, height }}>
-        <GridPage page={content} />
+        {/* Keyed by page, as the application keys the editor around it: a
+            different page is a fresh grid. */}
+        <GridPage key={content.id} page={content} />
       </div>
     </MetricsStoreProvider>
   )
@@ -144,3 +146,195 @@ describe('the grid page in a real layout engine', () => {
     })
   })
 })
+
+describe('a page opened at phone width', () => {
+  // Every spec above starts wide and narrows. A phone never does: its page is
+  // one column from the first frame, and every page switch mounts a fresh grid
+  // at that width. Narrowing sorts the panels into reading order; mounting
+  // narrow has to come out the same (#139).
+
+  it('stacks the shipped preset in reading order from the first frame', async () => {
+    const [preset] = defaultDashboardDocument().pages
+    const { container } = render(<Harness width={390} height={800} content={preset} />)
+
+    // Nothing has been painted yet, so this is the frame a phone shows first:
+    // already the stack, rather than the desktop layout or a stack about to be
+    // shuffled into order.
+    expectReadingOrderStack(container, preset)
+
+    // And still the stack once the container has been measured.
+    await settled(container, 800)
+    expectReadingOrderStack(container, preset)
+  })
+
+  it('stacks a page stored out of reading order in reading order, and the page switched to next', async () => {
+    const { container, rerender } = render(
+      <Harness width={390} height={800} content={STORED_OUT_OF_ORDER} />,
+    )
+    expectReadingOrderStack(container, STORED_OUT_OF_ORDER)
+    await settled(container, 800)
+    expectReadingOrderStack(container, STORED_OUT_OF_ORDER)
+
+    const [preset] = defaultDashboardDocument().pages
+    rerender(<Harness width={390} height={800} content={preset} />)
+    expectReadingOrderStack(container, preset)
+    await settled(container, 800)
+    expectReadingOrderStack(container, preset)
+  })
+
+  it('gives every panel its authored cells back when widened, and stacks them again when narrowed', async () => {
+    const { container, rerender } = render(
+      <Harness width={390} height={800} content={STORED_OUT_OF_ORDER} />,
+    )
+    await settled(container, 800)
+
+    rerender(<Harness width={1280} height={800} content={STORED_OUT_OF_ORDER} />)
+    await waitFor(() => {
+      const cells = panelGeometry(container)
+      for (const panel of STORED_OUT_OF_ORDER.panels) {
+        expect(cells.get(panel.id), panel.id).toEqual(panel.geometry)
+      }
+    })
+
+    rerender(<Harness width={390} height={800} content={STORED_OUT_OF_ORDER} />)
+    await waitFor(() => expectReadingOrderStack(container, STORED_OUT_OF_ORDER))
+  })
+})
+
+describe('a page as it opens', () => {
+  // Until the container has been measured the grid lays rows out at a fallback
+  // height, and the first frame is painted that way. The measured height then
+  // replaces it. That swap is the page arriving, not the layout changing, so no
+  // panel may be seen growing or sliding into place, at either width. Later
+  // relayouts still animate.
+
+  it.each([
+    ['at phone width', 390],
+    ['at desktop width', 1280],
+  ])('takes the measured row height without animating to it %s', async (_name, width) => {
+    const [preset] = defaultDashboardDocument().pages
+    const { container, rerender } = render(
+      <Harness width={width} height={800} content={preset} />,
+    )
+
+    // The first check that sees the measured height runs in the task that
+    // applied it, well inside the library's 300ms transition: a panel that is
+    // being animated to it is still running that transition here.
+    await waitFor(() => expect(rowHeight(container)).toBe(rowHeightFor(800)))
+    expect(animatingPanels(container)).toEqual([])
+    const arrived = drawnBoxes(container)
+    await nextFrames()
+    expect(drawnBoxes(container)).toEqual(arrived)
+
+    // Animation is on once the page has arrived: a later change of row height,
+    // such as a shorter window, still moves the panels rather than jumping.
+    await waitFor(() =>
+      expect(container.querySelector('.grid-stack')).toHaveClass('grid-stack-animate'),
+    )
+    rerender(<Harness width={width} height={600} content={preset} />)
+    await waitFor(() => expect(rowHeight(container)).toBe(rowHeightFor(600)))
+    expect(animatingPanels(container)).not.toEqual([])
+  })
+})
+
+/** The row height the engine lays every item out with. */
+function rowHeight(container: HTMLElement): string {
+  return container.querySelector<HTMLElement>('.grid-stack')!.style.getPropertyValue('--gs-cell-height')
+}
+
+/** The row height fit-to-viewport divides out of a container this tall. */
+function rowHeightFor(height: number): string {
+  return `${Math.floor(height / GRID_MAX_ROWS)}px`
+}
+
+/** The panels with a transition running, by id. */
+function animatingPanels(container: HTMLElement): string[] {
+  return [...container.querySelectorAll('.grid-stack-item')]
+    .filter((el) => el.getAnimations().length > 0)
+    .map((el) => el.getAttribute('gs-id')!)
+}
+
+/** Where every panel is drawn, by id. */
+function drawnBoxes(container: HTMLElement): Record<string, number[]> {
+  return Object.fromEntries(
+    [...container.querySelectorAll('.grid-stack-item')].map((el) => {
+      const { top, left, width, height } = el.getBoundingClientRect()
+      return [el.getAttribute('gs-id')!, [top, left, width, height]]
+    }),
+  )
+}
+
+/** Two painted frames. */
+function nextFrames(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
+
+/**
+ * A page whose panels are stored in an order that is not its reading order
+ * (cpu, slo, memory, disk, net), as an operator's edits leave them.
+ *
+ * The heights are uneven, so a panel stacked out of turn leaves rows empty.
+ * And one panel is a single column wide at the left edge, so it already fits a
+ * one-column grid as it is: unless the grid collapsed from the authored layout,
+ * nothing has recorded its desktop cells for widening to restore.
+ */
+const STORED_OUT_OF_ORDER = page([
+  ['memory', 'memory', { x: 0, y: 3, w: 6, h: 2 }],
+  ['net', 'network-io', { x: 0, y: 5, w: 1, h: 3 }],
+  ['disk', 'disk-io', { x: 6, y: 4, w: 6, h: 4 }],
+  ['slo', 'engine-slo-goodput', { x: 6, y: 0, w: 6, h: 4 }],
+  ['cpu', 'cpu-utilization', { x: 0, y: 0, w: 6, h: 3 }],
+])
+
+/** Desktop reading order: by row, then by column, of the authored geometry. */
+function readingOrder(content: DashboardPage): string[] {
+  return [...content.panels]
+    .sort((a, b) => a.geometry.y - b.geometry.y || a.geometry.x - b.geometry.x)
+    .map((panel) => panel.id)
+}
+
+/**
+ * The page is one full-width column, top to bottom in reading order, and no
+ * row between two panels is empty.
+ *
+ * Width and order are read off where the panels are drawn rather than off the
+ * engine's numbers, so a panel still on its way into the stack does not pass.
+ */
+function expectReadingOrderStack(container: HTMLElement, content: DashboardPage): void {
+  const grid = container.querySelector('.grid-stack')!.getBoundingClientRect()
+  const drawn = [...container.querySelectorAll('.grid-stack-item')].map((el) => ({
+    id: el.getAttribute('gs-id')!,
+    box: el.getBoundingClientRect(),
+  }))
+  expect(drawn).toHaveLength(content.panels.length)
+  for (const { id, box } of drawn) {
+    expect(Math.round(box.width), `${id} spans the page`).toBe(Math.round(grid.width))
+  }
+
+  const stacked = drawn.sort((a, b) => a.box.top - b.box.top).map(({ id }) => id)
+  expect(stacked).toEqual(readingOrder(content))
+
+  // Each panel starts on the row the one above it ends on.
+  const cells = panelGeometry(container)
+  let row = 0
+  for (const id of stacked) {
+    expect(cells.get(id), id).toMatchObject({ x: 0, y: row, w: 1 })
+    row += cells.get(id)!.h
+  }
+}
+
+/**
+ * Waits for the grid to have arrived: the row height divided out of the
+ * measured container, and no panel still moving to where the engine put it.
+ */
+async function settled(container: HTMLElement, height: number): Promise<void> {
+  await waitFor(() => {
+    const grid = container.querySelector<HTMLElement>('.grid-stack')!
+    expect(grid.style.getPropertyValue('--gs-cell-height')).toBe(
+      `${Math.floor(height / GRID_MAX_ROWS)}px`,
+    )
+    for (const item of container.querySelectorAll('.grid-stack-item')) {
+      expect(item.getAnimations()).toEqual([])
+    }
+  })
+}

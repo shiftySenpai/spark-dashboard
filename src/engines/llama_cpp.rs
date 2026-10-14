@@ -21,12 +21,12 @@
 
 use super::prometheus::parse_prometheus_text;
 use super::{
-    EngineAdapter, EngineMetrics, EngineStatus, EngineType, ModelInfo, ModelMetadataError,
-    ModelResolution,
+    EngineAdapter, EngineMetrics, EngineStatus, EngineType, MetricGroup, ModelInfo,
+    ModelMetadataError, ModelResolution,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -361,6 +361,15 @@ impl LlamaCppAdapter {
 impl EngineAdapter for LlamaCppAdapter {
     fn engine_type(&self) -> EngineType {
         EngineType::LlamaCpp
+    }
+
+    /// Declares every group. Which tiles llama.cpp actually lacks is still
+    /// decided on the frontend (`lib/engineCapabilities.ts`), which hides them
+    /// rather than letting the panel say "not reported" — so the declaration
+    /// stays all-on and today's rendering is unchanged. Splitting it to match
+    /// the capability table is the follow-up.
+    fn metric_groups(&self) -> BTreeSet<MetricGroup> {
+        MetricGroup::all()
     }
 
     fn endpoint(&self) -> &str {

@@ -9,10 +9,13 @@ import {
   engineDescription,
   engineDisplayName,
   engineIconSrc,
+  metricGroupName,
   shortGpuName,
   modelMetadataWarning,
+  notReportedMessage,
 } from '../lib/format'
 import type { EngineType } from '../types/metrics'
+import { METRIC_GROUPS } from '../types/metrics'
 
 const GIB = 1_073_741_824
 const MIB = 1_048_576
@@ -198,5 +201,39 @@ describe('shortGpuName', () => {
 
   it('leaves an already-short name untouched', () => {
     expect(shortGpuName('RTX 3090')).toBe('RTX 3090')
+  })
+})
+
+describe('metricGroupName', () => {
+  it('names every group in the glossary’s words', () => {
+    expect(METRIC_GROUPS.map(metricGroupName)).toEqual([
+      'throughput',
+      'requests',
+      'latency means',
+      'latency percentiles',
+      'queue time',
+      'KV cache',
+      'prefix cache',
+      'speculative decoding',
+    ])
+  })
+})
+
+describe('notReportedMessage', () => {
+  const engine = { engine_type: 'Vllm' as const, endpoint: 'http://localhost:8080' }
+
+  it('names the engine by type and endpoint, and the group it does not report', () => {
+    expect(notReportedMessage(engine, ['SpeculativeDecoding'])).toBe(
+      'vLLM localhost:8080 does not report speculative decoding.',
+    )
+  })
+
+  it('lists several groups as alternatives the engine reports none of', () => {
+    expect(notReportedMessage(engine, ['KvCache', 'PrefixCache'])).toBe(
+      'vLLM localhost:8080 does not report KV cache or prefix cache.',
+    )
+    expect(notReportedMessage(engine, ['LatencyMeans', 'LatencyPercentiles', 'QueueTime'])).toBe(
+      'vLLM localhost:8080 does not report latency means, latency percentiles or queue time.',
+    )
   })
 })

@@ -20,10 +20,36 @@ _Avoid_: user, admin, viewer
 
 **Engine**:
 An inference server on the host, detected by process scan or the Docker API and
-polled for Prometheus metrics. Identified to the backend by its **endpoint**;
-identified in the UI by type and endpoint together, since a host can run several
-of the same type.
+polled for metrics over its own API. Identified to the backend by its
+**endpoint**; identified in the UI by **engine type** and endpoint together,
+since a host can run several of the same type. An engine serves one model, or —
+for an engine type that loads on demand — several that come and go; it is one
+engine either way.
 _Avoid_: server, model, backend (the backend is the Rust process)
+
+**Engine type**:
+Which inference server software an engine is (vLLM, SGLang, llama.cpp, Ollama).
+Decides how the engine is detected and which metrics it can report.
+_Avoid_: engine kind, runtime, flavor, provider (a provider publishes models)
+
+**Metric group**:
+A set of engine metrics an engine reports together or not at all. The groups
+are cut where the panels cut tiles, so that each is all-or-nothing on every
+engine type: throughput, batch size, active requests, request total,
+preemptions, queue time, KV cache, prefix cache, speculative decoding, and each
+latency (TTFT, E2E, ITL, TPOT) as a mean and as percentiles. An engine
+**reports** a group or does not, and says which on the metrics contract. A panel
+none of whose groups is reported says so and keeps its grid slot; a tile whose
+group is not reported keeps its slot too and reads "not reported". Neither shows
+a zero or a dash. See
+[ADR-0004](./docs/adr/0004-engines-declare-what-they-report.md).
+_Avoid_: capability, feature, supported metric
+
+**Metrics off**:
+A running engine whose engine type can report metrics but whose metrics endpoint
+is disabled by how it was launched. Distinct from a metric group that is not
+reported: the remedy is a launch flag, and the panel names it.
+_Avoid_: metrics disabled, unavailable, unsupported
 
 **Provider**:
 The organization that published a model, taken from its HuggingFace-style org
@@ -76,16 +102,16 @@ grid slot; silent substitution is prohibited.
 _Avoid_: data source, target (a target is what a binding resolves *to*), filter
 
 **Follow**:
-The default binding, and the sentinel every panel in the preset carries. It
-resolves to the **page selection**, which is what makes one static preset correct
-on a one-GPU laptop and on a four-GPU server.
+The default binding, and the sentinel every panel in the preset and in every
+starting layout carries. It resolves to the **page selection**, which is what
+makes one static preset correct on a one-GPU laptop and on a four-GPU server.
 _Avoid_: auto, inherit, default binding
 
 **Page selection**:
 The GPU and engine target a page's `follow` panels resolve against. Three layers,
-strongest first: what the operator chose this session (stored sparsely, so an
-absent key means "never chose" rather than "chose nothing"), the page's **page
-source**, then the host's defaults.
+strongest first: what was chosen this session — by the operator, or by **engine
+rotation** — (stored sparsely, so an absent key means "never chose" rather than
+"chose nothing"), the page's **page source**, then the host's defaults.
 _Avoid_: current GPU, active engine, global filter
 
 **Page source**:
@@ -100,9 +126,25 @@ _Avoid_: page filter, default engine (it may also be the aggregate), page bindin
 The combined view across every running engine: throughput and counters sum,
 latencies are request-weighted means (`lib/engineAggregate`). A following panel
 rendering it says so — a combined figure wearing no name would read as one
-engine's. Per-engine things (logs, engine identity, a pin) never aggregate.
+engine's. It spans engines, however many models each holds, and combines only
+the engines that report the metric — saying so when that is not all of them.
+Per-engine things (logs, engine identity, a pin) never aggregate.
 _Avoid_: global view, all engines (the panel type "All Engines" is the overview
 panel; the page source is about what following panels render)
+
+**Engine rotation**:
+A browser's setting — off, or 3, 5, 10 or 20 s — that steps a page's following
+engine panels through **all models** and then each running engine in snapshot
+order, for a wall display nobody is standing at. It writes the page selection's
+session layer, so it overrides the **page source** for that browser only and
+hands the page back to it when it stops; pinned, GPU and host panels never move.
+Off by default, idle with fewer than two engines running, and frozen in **edit
+mode**. Kept in browser storage like the latency statistic and never in the
+**dashboard configuration**: one screen cycling must not set every screen
+cycling.
+_Avoid_: auto-rotate, carousel, tab rotation (the pre-0.14 feature it replaces
+cycled in-page engine tabs), page rotation (cycling between pages is a different
+thing, and not built)
 
 **Time window**:
 How much history a panel's chart covers (`5m`, `10m`, `15m`). Per panel, not per
@@ -131,6 +173,17 @@ The one-page arrangement rendered when nothing is stored — a static document, 
 one generated from the host it lands on. "Fresh install" and "reset" are the same
 state: the document does not exist.
 _Avoid_: default layout, template, seed, factory settings
+
+**Starting layout**:
+A built-in arrangement a new page can start from, offered by **New page** beside
+an empty page. Its panels are copied into the page when it is made; from then on
+the page is the operator's like any other, and nothing ties it back to the
+layout. **Legacy** — the pre-0.14 fixed dashboard's reading order, every panel
+following — is the only one. It is not the preset: the preset is the one document
+rendered when nothing is stored, while a starting layout renders only when asked
+for, only ever adds a page, and never changes what a fresh install opens on.
+_Avoid_: template, seed, preset (the preset is what renders when nothing is
+stored), default layout
 
 ### What is stored, and where
 

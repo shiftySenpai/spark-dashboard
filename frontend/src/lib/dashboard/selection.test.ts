@@ -140,7 +140,7 @@ describe('pageSelection', () => {
     expect(
       pageSelection(host, {
         gpuTarget: { kind: 'gpu', index: 1 },
-        engineEndpoint: 'http://localhost:8001',
+        engineTarget: { kind: 'engine', endpoint: 'http://localhost:8001' },
       }),
     ).toEqual({
       gpuTarget: { kind: 'gpu', index: 1 },
@@ -157,8 +157,37 @@ describe('pageSelection', () => {
     )
 
     expect(
-      pageSelection(host, { engineEndpoint: 'http://localhost:8000' }, ALL_MODELS).engineTarget,
+      pageSelection(
+        host,
+        { engineTarget: { kind: 'engine', endpoint: 'http://localhost:8000' } },
+        ALL_MODELS,
+      ).engineTarget,
     ).toEqual({ kind: 'engine', endpoint: 'http://localhost:8000' })
+  })
+
+  it('honours a session choice of all models over a source naming one engine', () => {
+    // The other direction, and the one engine rotation starts every cycle
+    // with: the session can ask for the combined view on a one-engine page.
+    const host = snapshot(
+      [gpu(0)],
+      [engine('http://localhost:8000'), engine('http://localhost:8001')],
+    )
+
+    expect(
+      pageSelection(
+        host,
+        { engineTarget: { kind: 'all' } },
+        { kind: 'engine', endpoint: 'http://localhost:8001' },
+      ).engineTarget,
+    ).toEqual({ kind: 'all' })
+  })
+
+  it('honours a session choice of all models on a host left to its defaults', () => {
+    const host = snapshot([gpu(0)], [engine('http://localhost:8000')])
+
+    expect(pageSelection(host, { engineTarget: { kind: 'all' } }).engineTarget).toEqual({
+      kind: 'all',
+    })
   })
 
   it('keeps a choice whose target has gone away', () => {
@@ -167,7 +196,7 @@ describe('pageSelection', () => {
     expect(
       pageSelection(host, {
         gpuTarget: { kind: 'gpu', index: 3 },
-        engineEndpoint: 'http://localhost:9999',
+        engineTarget: { kind: 'engine', endpoint: 'http://localhost:9999' },
       }),
     ).toEqual({
       gpuTarget: { kind: 'gpu', index: 3 },
@@ -199,26 +228,42 @@ describe('choosing what a page points at', () => {
       gpuTarget: { kind: 'gpu', index: 2 },
     })
     expect(
-      withSelectedEngine({ gpuTarget: { kind: 'gpu', index: 2 } }, 'http://localhost:8000'),
+      withSelectedEngine(
+        { gpuTarget: { kind: 'gpu', index: 2 } },
+        { kind: 'engine', endpoint: 'http://localhost:8000' },
+      ),
     ).toEqual({
       gpuTarget: { kind: 'gpu', index: 2 },
-      engineEndpoint: 'http://localhost:8000',
+      engineTarget: { kind: 'engine', endpoint: 'http://localhost:8000' },
     })
+  })
+
+  it('records all models as a choice of its own', () => {
+    const onGpu2 = { gpuTarget: { kind: 'gpu', index: 2 } as const }
+    expect(withSelectedEngine(onGpu2, { kind: 'all' })).toEqual({
+      ...onGpu2,
+      engineTarget: { kind: 'all' },
+    })
+    expect(
+      withSelectedEngine({ engineTarget: { kind: 'engine', endpoint: 'http://x:1' } }, {
+        kind: 'all',
+      }),
+    ).toEqual({ engineTarget: { kind: 'all' } })
   })
 
   it('goes back to following the host when the choice is cleared', () => {
     // Absent means "never chose", which is what a cleared selection has to
     // become — storing a null would freeze the page on a host that changes.
-    expect(
-      withSelectedGpu({ gpuTarget: { kind: 'gpu', index: 2 }, engineEndpoint: 'http://x:1' }, null),
-    ).toEqual({
-      engineEndpoint: 'http://x:1',
+    const target = { kind: 'engine', endpoint: 'http://x:1' } as const
+    const chosen = { gpuTarget: { kind: 'gpu', index: 2 } as const, engineTarget: target }
+    expect(withSelectedGpu(chosen, null)).toEqual({
+      engineTarget: target,
     })
-    expect(
-      withSelectedEngine({ gpuTarget: { kind: 'gpu', index: 2 }, engineEndpoint: 'http://x:1' }, null),
-    ).toEqual({
+    expect(withSelectedEngine(chosen, null)).toEqual({
       gpuTarget: { kind: 'gpu', index: 2 },
     })
+    // Clearing all models is clearing a choice like any other.
+    expect(withSelectedEngine({ engineTarget: { kind: 'all' } }, null)).toEqual({})
   })
 
   it('leaves the selection it was given untouched', () => {

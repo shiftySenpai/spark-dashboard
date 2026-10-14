@@ -1,4 +1,4 @@
-import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart'
+import { TimeSeriesChart, type ChartSeries } from '@/components/charts/TimeSeriesChart'
 import { AnimatedCounter } from '@/components/engines/AnimatedCounter'
 import { KvBar, MetricTile, TrendArrow } from '@/components/engines/EnginePanelPrimitives'
 import { computeTrend } from '@/lib/engineStats'
@@ -17,6 +17,8 @@ import type { PanelContentProps } from '../panelRegistry'
  *
  * The two belong together: a KV cache filling up is what limits how many
  * requests an engine can hold, and prefix hits are what keep it from filling.
+ * They are separate metric groups all the same, so an engine reporting one of
+ * them gets that half of the panel — never a dash standing in for the other.
  */
 export function EngineCachePanel({ panel }: PanelContentProps) {
   const rows = useEngineRows(panel)
@@ -49,14 +51,23 @@ export function EngineCachePanel({ panel }: PanelContentProps) {
     return <EnginePanelNotice resolution={resolution} />
   }
 
-  const { metric, series } = resolution
-  // KV-cache usage is a vLLM gauge; llama.cpp exposes none, so hide the block
-  // rather than render a "--%" that reads as a fault.
+  const { metric, series, reports } = resolution
+  // Two gates on each half, both of which must hold to draw it: what the
+  // engine's adapter declares on its snapshot (ADR-0004), and what this fork
+  // knows the engine type can produce at all — llama.cpp has no KV-usage
+  // gauge, so its block is hidden rather than rendered as a "--%" that reads
+  // as a fault.
   const engineType = resolution.status === 'resolved' ? resolution.engine.engine_type : null
-  const showKv = supportsCapability(engineType, 'kvCache')
+  const kvCache = reports('KvCache') && supportsCapability(engineType, 'kvCache')
+  const prefixCache = reports('PrefixCache')
   const kvPercent = metric('kv_cache_percent')
   const prefixHit = metric('prefix_cache_hit_rate')
   const kvSeries = series('kvCache')
+
+  const lines: Array<ChartSeries | null> = [
+    kvCache ? { data: kvSeries, label: 'KV Cache', color: '#76B900' } : null,
+    prefixCache ? { data: series('prefixCacheHit'), label: 'Prefix Hit', color: '#3b82f6' } : null,
+  ]
 
   return (
     <EnginePanelBody
@@ -64,7 +75,7 @@ export function EngineCachePanel({ panel }: PanelContentProps) {
       tiles={
         <div className="flex flex-col gap-2">
           <div className="grid grid-cols-2 gap-1.5">
-            {showKv && (
+            {kvCache && (
               <div className="flex flex-col gap-0.5 min-w-0">
                 <span className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider truncate">
                   KV Cache
@@ -80,31 +91,32 @@ export function EngineCachePanel({ panel }: PanelContentProps) {
                 {kvPercent !== null && <KvBar percent={kvPercent} />}
               </div>
             )}
-            <MetricTile
-              label="Prefix Hit"
-              value={prefixHit !== null ? `${Math.round(prefixHit)}` : '--'}
-              unit="%"
-            />
+            {prefixCache && (
+              <MetricTile
+                label="Prefix Hit"
+                value={prefixHit !== null ? `${Math.round(prefixHit)}` : '--'}
+                unit="%"
+              />
+            )}
           </div>
-          <div className="flex flex-col gap-0.5 min-w-0">
-            <span className="text-[10px] 2xl:text-xs font-medium text-zinc-400 uppercase tracking-wider truncate">
-              Prefix Queries
-            </span>
-            <AnimatedCounter
-              value={metric('prefix_cache_queries_total')}
-              format={formatCompactTokens}
-              className="text-lg xl:text-xl 2xl:text-2xl min-[1920px]:text-3xl font-bold text-zinc-100 font-mono tabular-nums leading-none"
-            />
-          </div>
+          {prefixCache && (
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <span className="text-[10px] 2xl:text-xs font-medium text-zinc-400 uppercase tracking-wider truncate">
+                Prefix Queries
+              </span>
+              <AnimatedCounter
+                value={metric('prefix_cache_queries_total')}
+                format={formatCompactTokens}
+                className="text-lg xl:text-xl 2xl:text-2xl min-[1920px]:text-3xl font-bold text-zinc-100 font-mono tabular-nums leading-none"
+              />
+            </div>
+          )}
         </div>
       }
       chart={
         <TimeSeriesChart
           hideTooltipLabel
-          series={[
-            ...(showKv ? [{ data: kvSeries, label: 'KV Cache', color: '#76B900' }] : []),
-            { data: series('prefixCacheHit'), label: 'Prefix Hit', color: '#3b82f6' },
-          ]}
+          series={lines.filter((line) => line !== null)}
           yDomain={[0, 100]}
           unit="%"
         />

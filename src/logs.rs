@@ -534,7 +534,7 @@ pub async fn run_log_exporter(hec_config: hec::SharedHecConfig, host: String, in
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::{DeploymentMode, EngineStatus, EngineType};
+    use crate::engines::{DeploymentMode, EngineStatus, EngineType, MetricGroup};
 
     fn snapshot(endpoint: &str, container_id: Option<&str>) -> EngineSnapshot {
         EngineSnapshot {
@@ -543,6 +543,7 @@ mod tests {
             status: EngineStatus::Running,
             model: None,
             model_metadata_error: None,
+            metric_groups: MetricGroup::all(),
             metrics: None,
             metrics_disabled: false,
             recent_requests: Vec::new(),

@@ -51,13 +51,18 @@ export interface PageSelection {
 }
 
 /**
- * What the operator explicitly pointed the page at, for this session. A key is
- * present only once they have chosen; absent means "defer to the page's source,
- * then the host", which is where every page starts.
+ * What the page was explicitly pointed at, for this session. A key is present
+ * only once something chose; absent means "defer to the page's source, then
+ * the host", which is where every page starts.
+ *
+ * The engine half holds a whole target rather than an endpoint, so a session
+ * can point a page at all models as well as at one engine — which is what
+ * engine rotation steps through, starting from all models on a page whose
+ * source names one engine.
  */
 export interface SelectedTargets {
   readonly gpuTarget?: PageGpuTarget
-  readonly engineEndpoint?: string
+  readonly engineTarget?: PageEngineTarget
 }
 
 /** Nothing to point at: no snapshot, or a host with neither GPU nor engine. */
@@ -91,14 +96,15 @@ export function withSelectedGpu(
   return target === null ? without(chosen, 'gpuTarget') : { ...chosen, gpuTarget: target }
 }
 
-/** Point the page at one engine, or back at the host's default with null. */
+/**
+ * Point the page at one engine or at all models, or with null back at what it
+ * follows without a choice: its source, then the host's default.
+ */
 export function withSelectedEngine(
   chosen: SelectedTargets,
-  endpoint: string | null,
+  target: PageEngineTarget | null,
 ): SelectedTargets {
-  return endpoint === null
-    ? without(chosen, 'engineEndpoint')
-    : { ...chosen, engineEndpoint: endpoint }
+  return target === null ? without(chosen, 'engineTarget') : { ...chosen, engineTarget: target }
 }
 
 /** The three layers, strongest first: session choice, configured source, host. */
@@ -107,19 +113,19 @@ function engineTarget(
   chosen: SelectedTargets,
   source: PageSource | undefined,
 ): PageEngineTarget | null {
-  if (chosen.engineEndpoint !== undefined) {
-    return { kind: 'engine', endpoint: chosen.engineEndpoint }
-  }
+  if (chosen.engineTarget !== undefined) return chosen.engineTarget
   if (source !== undefined) {
     return source.kind === 'all' ? { kind: 'all' } : { kind: 'engine', endpoint: source.endpoint }
   }
   const engines = snapshot?.engines ?? []
   // The host's default for a multi-engine host is every engine — one row
   // each, the engine counterpart of the multi-GPU default — since naming one
-  // would hide the rest. A one-engine host follows its engine; a host with
-  // nothing detected has nothing to follow.
+  // would hide the rest. A one-engine host follows its engine, preferring one
+  // actually running over one merely detected; a host with nothing detected has
+  // nothing to follow.
   if (engines.length > 1) return { kind: 'all' }
-  return engines[0] ? { kind: 'engine', endpoint: engines[0].endpoint } : null
+  const engine = engines.find((e) => e.status.type === 'Running') ?? engines[0]
+  return engine ? { kind: 'engine', endpoint: engine.endpoint } : null
 }
 
 /**
@@ -128,7 +134,7 @@ function engineTarget(
  * on a host whose GPUs or engines change under it.
  */
 function without(chosen: SelectedTargets, key: keyof SelectedTargets): SelectedTargets {
-  const next: { gpuTarget?: PageGpuTarget; engineEndpoint?: string } = { ...chosen }
+  const next: { gpuTarget?: PageGpuTarget; engineTarget?: PageEngineTarget } = { ...chosen }
   delete next[key]
   return next
 }

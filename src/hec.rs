@@ -1295,6 +1295,7 @@ mod tests {
 
     fn engine_with(active: Option<u64>, queued: Option<u64>) -> EngineSnapshot {
         EngineSnapshot {
+            metric_groups: crate::engines::MetricGroup::all(),
             engine_type: EngineType::Vllm,
             endpoint: "http://127.0.0.1:8000".into(),
             status: EngineStatus::Running,
@@ -1576,6 +1577,7 @@ mod tests {
     fn engine_metrics_use_the_engine_type_prefix() {
         let snap = snapshot(|s| {
             s.engines = vec![EngineSnapshot {
+                metric_groups: crate::engines::MetricGroup::all(),
                 metrics: Some(EngineMetrics {
                     active_requests: Some(4),
                     queued_requests: Some(0),
@@ -1603,6 +1605,7 @@ mod tests {
     fn requests_and_cache_spec_decode_fields_are_exported() {
         let snap = snapshot(|s| {
             s.engines = vec![EngineSnapshot {
+                metric_groups: crate::engines::MetricGroup::all(),
                 metrics: Some(EngineMetrics {
                     total_requests: Some(412),
                     swapped_requests: Some(0),
@@ -1661,6 +1664,7 @@ mod tests {
     fn throughput_latency_and_goodput_fields_are_exported() {
         let snap = snapshot(|s| {
             s.engines = vec![EngineSnapshot {
+                metric_groups: crate::engines::MetricGroup::all(),
                 metrics: Some(EngineMetrics {
                     prompt_tokens_per_sec: Some(1200.0),
                     avg_prompt_tokens_per_sec: Some(950.0),
@@ -1766,6 +1770,7 @@ mod tests {
     fn known_zero_counts_and_only_old_requests_are_idle() {
         let snap = snapshot(|s| {
             s.engines = vec![EngineSnapshot {
+                metric_groups: crate::engines::MetricGroup::all(),
                 recent_requests: vec![RecentRequest {
                     start_ms: 0,
                     end_ms: 1_723_799_900_000, // 100 s before the snapshot
@@ -1781,6 +1786,7 @@ mod tests {
     fn a_recent_request_within_the_window_is_active() {
         let snap = snapshot(|s| {
             s.engines = vec![EngineSnapshot {
+                metric_groups: crate::engines::MetricGroup::all(),
                 recent_requests: vec![RecentRequest {
                     start_ms: 1_723_799_990_000, // 10 s before the snapshot
                     end_ms: 1_723_799_995_000,
@@ -1796,6 +1802,7 @@ mod tests {
     fn a_request_exactly_at_the_window_edge_is_active() {
         let snap = snapshot(|s| {
             s.engines = vec![EngineSnapshot {
+                metric_groups: crate::engines::MetricGroup::all(),
                 recent_requests: vec![RecentRequest {
                     start_ms: 1_723_799_940_000, // exactly 60 s before
                     end_ms: 1_723_799_940_000,
@@ -1812,6 +1819,7 @@ mod tests {
         // Scrape broken: the whole metrics block is missing.
         let snap = snapshot(|s| {
             s.engines = vec![EngineSnapshot {
+                metric_groups: crate::engines::MetricGroup::all(),
                 metrics: None,
                 ..engine_with(Some(0), Some(0))
             }];

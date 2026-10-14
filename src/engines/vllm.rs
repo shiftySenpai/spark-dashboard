@@ -3,11 +3,12 @@ use super::prometheus::parse_prometheus_text;
 use super::warmup::WarmupTracker;
 use super::{
     EngineAdapter, EngineMetrics, EngineStatus, EngineType, HistogramBucket, LatencyPercentiles,
-    ModelInfo, ModelMetadataError, ModelResolution, E2E_SLO_MS, ITL_SLO_MS, TPOT_SLO_MS,
-    TTFT_SLO_MS,
+    MetricGroup, ModelInfo, ModelMetadataError, ModelResolution, E2E_SLO_MS, ITL_SLO_MS,
+    TPOT_SLO_MS, TTFT_SLO_MS,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -451,6 +452,14 @@ impl EngineAdapter for VllmAdapter {
 
     fn endpoint(&self) -> &str {
         &self.endpoint
+    }
+
+    /// vLLM reports every group. Speculative decoding included: the group says
+    /// the engine *can* report it, and the `spec_decode_*` counters — present
+    /// only when a draft model is configured — say whether this one does, which
+    /// the panel already tells apart ("not using speculative decoding").
+    fn metric_groups(&self) -> BTreeSet<MetricGroup> {
+        MetricGroup::all()
     }
 
     async fn health_check(&self) -> EngineStatus {
@@ -1109,6 +1118,19 @@ pub(crate) fn spec_mean_acceptance_length(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// vLLM fills every engine panel, so it declares every group — an operator
+    /// running it sees no "not reported" placeholder anywhere.
+    #[test]
+    fn vllm_reports_every_metric_group() {
+        let adapter = VllmAdapter::new(
+            reqwest::Client::new(),
+            "http://localhost:8000".into(),
+            None,
+            None,
+        );
+        assert_eq!(adapter.metric_groups(), MetricGroup::all());
+    }
 
     /// HF enrichment misses for non-public model ids (401/403/404) are
     /// expected and must stay quiet; other non-success statuses (e.g. 5xx,
